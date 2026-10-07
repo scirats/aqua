@@ -1,0 +1,58 @@
+[package]
+name = "aqua-server"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.80.1"
+description = "Aqua Wayland server: maps real xdg_toplevel windows to the Aqua RemoteWindow domain."
+license = "MIT OR Apache-2.0"
+
+[lib]
+name = "aqua_server"
+path = "src/lib.rs"
+
+[[bin]]
+name = "aqua-server"
+path = "src/main.rs"
+
+[dependencies]
+# Smithay 0.7.0. We deliberately disable the default backends (no DRM/KMS, no
+# EGL/GL, no libinput, no winit, no X11, no XWayland). This is a headless server:
+# it speaks the Wayland protocol and observes surfaces, but never renders.
+# `desktop` is a pure-Rust marker feature that we use only for popup tracking
+# (PopupManager) and frame-callback helpers.
+smithay = { version = "0.7", default-features = false, features = [
+    "wayland_frontend",
+    "desktop",
+] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Aqua protocol (phase 3A)
+prost = "0.14"
+bytes = "1"
+uuid = { version = "1", features = ["v4"] }
+
+# QUIC transport: Quinn (standard QUIC, Tokio runtime). Tokio runs on a
+# dedicated thread and only does networking; the Wayland/calloop loop is never
+# replaced. See docs/TRANSPORT.md.
+quinn = { version = "0.11", default-features = false, features = [
+    "runtime-tokio",
+    "rustls-ring",
+] }
+tokio = { version = "1", features = [
+    "rt-multi-thread",
+    "net",
+    "sync",
+    "macros",
+    "time",
+] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+rustls-pemfile = "2"
+sha2 = "0.10"
+futures = "0.3"
+
+[build-dependencies]
+prost-build = "0.14"
+
+[dev-dependencies]
+hex = "0.4"

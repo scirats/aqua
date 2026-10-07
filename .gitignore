@@ -1,0 +1,16 @@
+# macOS
+.DS_Store
+**/.DS_Store
+
+# Rust build output
+/server/target/
+/server/target-host/
+
+# Xcode
+/client/build/
+/client/DerivedData/
+**/xcuserdata/
+*.xcuserstate
+
+# Logs / local runtime
+*.log

@@ -1,0 +1,342 @@
+// Aqua Protocol v1 — normative schema.
+//
+// This file defines the wire format shared by the Rust server and the Swift
+// client. Bodies are Protocol Buffers encoded; each body is carried inside an
+// Aqua frame (see server/src/protocol/frame.rs and client Protocol docs):
+//
+//     frame := be32(type_tag) be32(payload_len) payload
+//
+// The frame header (not the protobuf body) carries the message type so that
+// unknown message types can be skipped safely by length.
+//
+// Identity rules:
+//   * server_session_id : UUID, changes every server run.
+//   * client_session_id : UUID, changes every client connection.
+//   * server_identity   : long-term, stable across runs (TLS key pinning).
+//   * window_id/surface_id are stable for the lifetime of the object and are
+//     namespaced by server_session_id.
+//   * revision is a monotonic counter per server_session_id.
+
+syntax = "proto3";
+
+package aqua.v1;
+
+// Capability bitset. Bit i set == capability i supported. See Capability.
+message Capabilities {
+  uint32 bits = 1;
+}
+
+enum Capability {
+  CAPABILITY_UNSPECIFIED = 0;
+  CAPABILITY_WINDOWS = 1;
+  CAPABILITY_POINTER = 2;
+  CAPABILITY_KEYBOARD = 3;
+  CAPABILITY_TOUCH = 4;
+  CAPABILITY_CLIPBOARD = 5;
+  CAPABILITY_DRAG_DROP = 6;
+  CAPABILITY_SURFACE_VIDEO = 7;
+  CAPABILITY_SURFACE_SHM = 8;
+  CAPABILITY_CURSOR = 9;
+}
+
+// Client -> Server
+message ClientHello {
+  uint32 protocol_version = 1;
+  string client_session_id = 2;
+  Capabilities capabilities = 3;
+  string client_name = 4;
+}
+
+// Server -> Client
+message ServerHello {
+  uint32 protocol_version = 1;
+  string server_session_id = 2;
+  string server_identity = 3;
+  Capabilities capabilities = 4;
+  uint64 revision = 5;
+  // Non-empty when the server rejects the handshake (e.g.
+  // "unsupported_protocol_version"). The connection is closed afterwards.
+  string error = 6;
+}
+
+message WindowInfo {
+  string window_id = 1;
+  string application_id = 2;
+  string title = 3;
+  uint32 state = 4;
+  bool mapped = 5;
+  bool has_min = 6;
+  int32 min_width = 7;
+  int32 min_height = 8;
+  bool has_max = 9;
+  int32 max_width = 10;
+  int32 max_height = 11;
+}
+
+message ServerSnapshot {
+  uint64 revision = 1;
+  string server_session_id = 2;
+  repeated WindowInfo windows = 3;
+  // Full surface tree of every window, so a late client can rebuild it.
+  repeated SurfaceInfo surfaces = 4;
+}
+
+message WindowCreated {
+  uint64 revision = 1;
+  WindowInfo window = 2;
+}
+
+message WindowUpdated {
+  uint64 revision = 1;
+  WindowInfo window = 2;
+}
+
+message WindowTitleChanged {
+  uint64 revision = 1;
+  string window_id = 2;
+  string title = 3;
+}
+
+message WindowApplicationChanged {
+  uint64 revision = 1;
+  string window_id = 2;
+  string application_id = 3;
+}
+
+message WindowStateChanged {
+  uint64 revision = 1;
+  string window_id = 2;
+  uint32 state = 3;
+}
+
+message WindowMapped {
+  uint64 revision = 1;
+  string window_id = 2;
+  bool mapped = 3;
+}
+
+message WindowClosed {
+  uint64 revision = 1;
+  string window_id = 2;
+}
+
+// A node of a window's surface tree. `xdg_toplevel` is a `RemoteWindow`;
+// its main wl_surface, subsurfaces and popups are `RemoteSurface`s.
+enum SurfaceRole {
+  SURFACE_ROLE_UNSPECIFIED = 0;
+  SURFACE_ROLE_TOPLEVEL = 1;
+  SURFACE_ROLE_SUBSURFACE = 2;
+  SURFACE_ROLE_POPUP = 3;
+}
+
+enum SurfaceFormat {
+  SURFACE_FORMAT_UNSPECIFIED = 0;
+  SURFACE_FORMAT_ARGB8888 = 1;
+  SURFACE_FORMAT_XRGB8888 = 2;
+}
+
+message SurfaceInfo {
+  string surface_id = 1;
+  string window_id = 2;
+  // Empty when the surface is the window's root toplevel surface.
+  string parent_surface_id = 3;
+  uint32 role = 4;
+  // Position relative to the parent surface (logical units).
+  int32 x = 5;
+  int32 y = 6;
+  uint32 width = 7;
+  uint32 height = 8;
+  // Stacking order among siblings (0 == bottom).
+  uint32 z = 9;
+}
+
+message SurfaceCreated {
+  uint64 revision = 1;
+  SurfaceInfo surface = 2;
+}
+
+message SurfaceUpdated {
+  uint64 revision = 1;
+  SurfaceInfo surface = 2;
+}
+
+message SurfaceDestroyed {
+  uint64 revision = 1;
+  string surface_id = 2;
+  string window_id = 3;
+}
+
+// Client -> Server: the iPad presented a frame (feedback for frame callbacks).
+message FramePresented {
+  string surface_id = 1;
+  uint64 frame_id = 2;
+  uint64 presentation_time_us = 3;
+}
+
+message Pong {
+  uint64 revision = 1;
+}
+
+// ---------------------------------------------------------------------------
+// Aqua data plane (surface streams)
+//
+// Frames are NOT sent on the control stream. Each RemoteSurface gets its own
+// unidirectional server->client QUIC stream. The stream is a sequence of:
+//
+//   [be32 header_len][SurfaceStreamHeader (protobuf)][payload_len raw bytes]
+//
+// The first message has kind = HELLO and identifies the surface. Every later
+// message has kind = FRAME and carries the raw SHM pixels.
+// ---------------------------------------------------------------------------
+
+enum SurfaceStreamKind {
+  SURFACE_STREAM_UNSPECIFIED = 0;
+  SURFACE_STREAM_HELLO = 1;
+  SURFACE_STREAM_FRAME = 2;
+}
+
+message DamageRect {
+  int32 x = 1;
+  int32 y = 2;
+  uint32 width = 3;
+  uint32 height = 4;
+}
+
+message SurfaceStreamHeader {
+  uint32 kind = 1;
+  // HELLO
+  string surface_id = 2;
+  string window_id = 3;
+  // FRAME
+  uint64 frame_id = 4;
+  uint32 width = 5;
+  uint32 height = 6;
+  uint32 stride = 7;
+  uint32 format = 8;
+  uint64 payload_len = 9;
+  repeated DamageRect damage = 10;
+}
+
+// ---------------------------------------------------------------------------
+// Aqua video data plane (phase 3C)
+//
+// The semantic unit stays the RemoteSurfaceTree. The *encoding* unit is the
+// RemoteWindow: one encoded stream per window, separate from the SHM plane
+// (which remains one stream per RemoteSurface). Codec negotiation and stream
+// configuration are described in docs/VIDEO.md.
+// ---------------------------------------------------------------------------
+
+enum VideoCodec {
+  VIDEO_CODEC_UNSPECIFIED = 0;
+  VIDEO_CODEC_H264 = 1;
+  VIDEO_CODEC_HEVC = 2;
+  VIDEO_CODEC_AV1 = 3;
+}
+
+// Decoder-facing chroma layout of the encoded stream.
+enum VideoChroma {
+  VIDEO_CHROMA_UNSPECIFIED = 0;
+  VIDEO_CHROMA_NV12 = 1;  // 4:2:0 8-bit
+  VIDEO_CHROMA_P010 = 2;  // 4:2:0 10-bit
+}
+
+// Server -> client, control plane: informational codec/stream config for a
+// RemoteWindow. The authoritative configuration is the data-plane CONFIG
+// message; this lets the client prepare a decoder ahead of the first frame.
+message WindowVideoConfig {
+  string window_id = 1;
+  uint32 codec = 2;        // VideoCodec
+  uint32 chroma = 3;       // VideoChroma
+  uint32 width = 4;
+  uint32 height = 5;
+  uint32 frame_rate = 6;   // target fps (0 == variable)
+  uint32 bitrate_kbps = 7;
+  uint32 gop = 8;          // keyframe interval (0 == encoder default)
+  bool low_latency = 9;    // no B-frames / no lookahead
+}
+
+// Client -> server: ask the encoder to emit a keyframe (decoder reset, dropped
+// GOP, resize, reconnection).
+message RequestKeyframe {
+  string window_id = 1;
+  string reason = 2;
+}
+
+enum WindowVideoStreamKind {
+  WINDOW_VIDEO_STREAM_UNSPECIFIED = 0;
+  WINDOW_VIDEO_STREAM_HELLO = 1;   // identifies the window
+  WINDOW_VIDEO_STREAM_CONFIG = 2;  // (re)configuration; may carry codec config
+  WINDOW_VIDEO_STREAM_FRAME = 3;   // one access unit
+}
+
+// Data-plane header for a window video stream:
+//   [be32 header_len][WindowVideoStreamHeader][payload_len raw bytes]
+message WindowVideoStreamHeader {
+  uint32 kind = 1;
+  string window_id = 2;
+  // CONFIG / FRAME
+  uint32 codec = 3;         // VideoCodec
+  uint32 chroma = 4;        // VideoChroma
+  uint32 width = 5;
+  uint32 height = 6;
+  // FRAME
+  uint64 frame_id = 7;
+  bool keyframe = 8;
+  uint64 pts_us = 9;
+  uint64 payload_len = 10;
+  // CONFIG: the payload is codec configuration only (VPS/SPS/PPS), no picture.
+  bool codec_config = 11;
+}
+
+// Client -> Server
+message ViewportChanged {
+  string window_id = 1;
+  int32 width = 2;
+  int32 height = 3;
+  double scale = 4;
+  bool is_final = 5;
+}
+
+message WindowFocusRequested {
+  string window_id = 1;
+}
+
+message PointerMoved {
+  string window_id = 1;
+  double x = 2;
+  double y = 3;
+}
+
+message PointerButton {
+  string window_id = 1;
+  uint32 button = 2;
+  bool pressed = 3;
+  double x = 4;
+  double y = 5;
+}
+
+message PointerScroll {
+  string window_id = 1;
+  double dx = 2;
+  double dy = 3;
+}
+
+message KeyEvent {
+  string window_id = 1;
+  uint32 keycode = 2;
+  string characters = 3;
+  uint32 modifiers = 4;
+  bool pressed = 5;
+}
+
+message TouchEvent {
+  string window_id = 1;
+  uint32 touch_id = 2;
+  uint32 phase = 3;
+  double x = 4;
+  double y = 5;
+}
+
+message Ping {
+  uint64 nonce = 1;
+}
