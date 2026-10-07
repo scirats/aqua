@@ -109,6 +109,33 @@ impl GpuFrame {
     pub fn plane_count(&self) -> usize {
         self.planes.len()
     }
+
+    /// Duplicate the plane fds, producing an independently owned frame.
+    pub fn try_clone(&self) -> std::io::Result<GpuFrame> {
+        let planes = self
+            .planes
+            .iter()
+            .map(|plane| {
+                Ok(PlaneFd::new(
+                    plane.fd.try_clone()?,
+                    plane.offset,
+                    plane.stride,
+                    plane.modifier,
+                ))
+            })
+            .collect::<std::io::Result<Vec<_>>>()?;
+        Ok(GpuFrame {
+            window_id: self.window_id.clone(),
+            surface_id: self.surface_id.clone(),
+            width: self.width,
+            height: self.height,
+            format: self.format,
+            source: self.source,
+            sync: self.sync,
+            planes,
+            data: self.data.clone(),
+        })
+    }
 }
 
 /// Why an import failed.

@@ -89,6 +89,40 @@ pub struct CalloopData {
 /// The Aqua compositor state.
 ///
 /// It owns Smithay state, the domain registry, and the adapter bookkeeping
+/// Last committed video source for a window, kept so a late video consumer can
+/// be served even if the window is static (no further commits).
+enum CachedSource {
+    Shm(SurfaceFrame),
+    Dmabuf(GpuFrame),
+}
+
+/// Repack an SHM frame to tightly packed BGRA (drop stride padding). wl_shm
+/// ARGB8888/XRGB8888 are BGRA/BGRX in memory.
+fn shm_frame_to_gpu(frame: &SurfaceFrame) -> Option<GpuFrame> {
+    let stride = frame.stride as usize;
+    let row = frame.width as usize * 4;
+    let needed = stride * frame.height.saturating_sub(1) as usize + row;
+    if frame.data.len() < needed {
+        return None;
+    }
+    let mut pixels = Vec::with_capacity(row * frame.height as usize);
+    for y in 0..frame.height as usize {
+        let offset = y * stride;
+        pixels.extend_from_slice(&frame.data[offset..offset + row]);
+    }
+    Some(GpuFrame {
+        window_id: frame.window_id.clone(),
+        surface_id: frame.surface_id.clone(),
+        width: frame.width,
+        height: frame.height,
+        format: DmabufFormat::new(0x3432_5241, 0), // ARGB8888
+        source: FrameSource::Shm,
+        sync: SyncState::Ready,
+        planes: Vec::new(),
+        data: Some(Bytes::from(pixels)),
+    })
+}
+
 /// (`wl_surface` -> `RemoteSurfaceId`, `Client` -> `ClientKey`).
 pub struct AquaState {
     pub start_time: Instant,
@@ -143,6 +177,7 @@ pub struct AquaState {
     /// using `video_encoder`; dmabuf frames use this one.
     pub dmabuf_encoder: Option<Arc<dyn VideoEncoder>>,
     pub video_sessions: HashMap<RemoteWindowId, Box<dyn VideoEncoderSession>>,
+    latest: HashMap<RemoteWindowId, CachedSource>,
 }
 
 impl AquaState {
@@ -213,6 +248,7 @@ impl AquaState {
             video_encoder: Arc::new(NullVideoEncoder),
             dmabuf_encoder: None,
             video_sessions: HashMap::new(),
+            latest: HashMap::new(),
         }
     }
 
@@ -327,63 +363,56 @@ impl AquaState {
         if frame.width < crate::gpu::MIN_WIDTH || frame.height < crate::gpu::MIN_HEIGHT {
             return; // below the VCN minimum; padded composition is a later step
         }
+        // Keep the latest source so a late consumer can be served (static UI has
+        // no further commits).
+        self.latest.insert(
+            RemoteWindowId::new(&frame.window_id),
+            CachedSource::Shm(frame.clone()),
+        );
         if !self.should_encode(&frame.window_id) {
             return;
         }
-        // Repack rows to tightly packed BGRA (drop stride padding). wl_shm
-        // ARGB8888/XRGB8888 are BGRA/BGRX in memory.
-        let stride = frame.stride as usize;
-        let row = frame.width as usize * 4;
-        let needed = stride * frame.height.saturating_sub(1) as usize + row;
-        if frame.data.len() < needed {
-            return;
+        if let Some(gpu) = shm_frame_to_gpu(frame) {
+            self.publish_encoded_gpu(gpu);
         }
-        let mut pixels = Vec::with_capacity(row * frame.height as usize);
-        for y in 0..frame.height as usize {
-            let offset = y * stride;
-            pixels.extend_from_slice(&frame.data[offset..offset + row]);
-        }
-        let gpu = GpuFrame {
-            window_id: frame.window_id.clone(),
-            surface_id: frame.surface_id.clone(),
-            width: frame.width,
-            height: frame.height,
-            format: DmabufFormat::new(0x3432_5241, 0), // ARGB8888
-            source: FrameSource::Shm,
-            sync: SyncState::Ready,
-            planes: Vec::new(),
-            data: Some(Bytes::from(pixels)),
-        };
-        self.publish_encoded_gpu(gpu);
     }
 
-    /// Encode a committed `dmabuf` frame (GPU path, no CPU readback). Dormant
-    /// until an encoder advertises `supports_dmabuf()`.
+    /// Encode a committed `dmabuf` frame (GPU path, no CPU readback).
     pub(crate) fn encode_video_gpu_frame(&mut self, gpu: GpuFrame) {
-        tracing::debug!(
-            target: "aqua::dmabuf",
-            window = %gpu.window_id,
-            width = gpu.width,
-            height = gpu.height,
-            "video.gpu_frame_in"
-        );
         if gpu.width < crate::gpu::MIN_WIDTH || gpu.height < crate::gpu::MIN_HEIGHT {
             return;
         }
-        if !self.video_encoder.supports_dmabuf() {
-            tracing::debug!(target: "aqua::dmabuf", "video.gpu_frame_skip: encoder has no dmabuf support");
+        if !self.video_supports_dmabuf() {
             return;
         }
+        if let Ok(cached) = gpu.try_clone() {
+            self.latest
+                .insert(RemoteWindowId::new(&gpu.window_id), CachedSource::Dmabuf(cached));
+        }
         if !self.should_encode(&gpu.window_id) {
-            tracing::debug!(
-                target: "aqua::dmabuf",
-                consumer = self.has_video_consumer(),
-                mapped = self.registry.window(&RemoteWindowId::new(&gpu.window_id)).map(|w| w.mapped).unwrap_or(false),
-                "video.gpu_frame_skip: no consumer or unmapped"
-            );
             return;
         }
         self.publish_encoded_gpu(gpu);
+    }
+
+    /// Re-encode the last committed source of every window. Called when a client
+    /// opens the video gate, so static windows (editors, terminals) appear.
+    pub(crate) fn reencode_latest(&mut self) {
+        let windows: Vec<RemoteWindowId> = self.latest.keys().cloned().collect();
+        for window in windows {
+            if !self.should_encode(&window.to_string()) {
+                continue;
+            }
+            let gpu = match self.latest.get(&window) {
+                Some(CachedSource::Shm(frame)) => shm_frame_to_gpu(frame),
+                Some(CachedSource::Dmabuf(gpu)) => gpu.try_clone().ok(),
+                None => None,
+            };
+            if let Some(gpu) = gpu {
+                tracing::debug!(target: "aqua::dmabuf", window = %window, "video.reencode_latest");
+                self.publish_encoded_gpu(gpu);
+            }
+        }
     }
 
     /// Cheap guard (not the hybrid decision): produce video only while at least
@@ -616,6 +645,11 @@ impl AquaState {
                     client_capabilities & crate::protocol::capability::SURFACE_VIDEO != 0,
                 );
                 self.network_clients.insert(client_id, outgoing);
+                // A newly connected video consumer must be served even if the
+                // windows are static (no further commits): re-encode the latest.
+                if client_capabilities & crate::protocol::capability::SURFACE_VIDEO != 0 {
+                    self.reencode_latest();
+                }
             }
             ServerEvent::ClientDisconnected { client_id } => {
                 self.network_clients.remove(&client_id);
@@ -696,6 +730,7 @@ impl AquaState {
                     if let Some(sink) = &self.video_sink {
                         sink.drop_window(&id.to_string());
                     }
+                    self.latest.remove(id);
                     self.revision += 1;
                     ServerMessage::WindowClosed(v1::WindowClosed {
                         revision: self.revision,

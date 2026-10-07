@@ -75,15 +75,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut window_id = String::new();
     let mut got_snapshot = false;
     while let Some((tag, payload)) = read_control(&mut recv).await {
-        if let Some(message) = ServerMessage::decode(tag, &payload) {
-            if let ServerMessage::Snapshot(snapshot) = &message {
-                window_id = snapshot
-                    .windows
-                    .first()
-                    .map(|w| w.window_id.clone())
-                    .unwrap_or_default();
-                got_snapshot = true;
-            }
+        if let Some(ServerMessage::Snapshot(snapshot)) = ServerMessage::decode(tag, &payload) {
+            window_id = snapshot
+                .windows
+                .first()
+                .map(|w| w.window_id.clone())
+                .unwrap_or_default();
+            got_snapshot = true;
         }
         if got_snapshot {
             break;
@@ -111,26 +109,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         };
         let mut recv = recv;
         while let Some((header, payload)) = read_surface_message(&mut recv).await {
-            match header.kind {
-                k if k == v1::SurfaceStreamKind::SurfaceStreamFrame as u32 => {
-                    // Skip tiny surfaces (cursor/decoration); take the terminal.
-                    if header.width >= 100 && header.height >= 100 {
-                        std::fs::write(&out, &payload)?;
-                        println!(
-                            "CAPTURED surface={} window={} {}x{} stride={} format={} bytes={} -> {out}",
-                            header.surface_id,
-                            header.window_id,
-                            header.width,
-                            header.height,
-                            header.stride,
-                            header.format,
-                            payload.len()
-                        );
-                        connection.close(0u32.into(), b"done");
-                        return Ok(());
-                    }
-                }
-                _ => {}
+            // Skip tiny surfaces (cursor/decoration); take the terminal.
+            if header.kind == v1::SurfaceStreamKind::SurfaceStreamFrame as u32
+                && header.width >= 100
+                && header.height >= 100
+            {
+                std::fs::write(&out, &payload)?;
+                println!(
+                    "CAPTURED surface={} window={} {}x{} stride={} format={} bytes={} -> {out}",
+                    header.surface_id,
+                    header.window_id,
+                    header.width,
+                    header.height,
+                    header.stride,
+                    header.format,
+                    payload.len()
+                );
+                connection.close(0u32.into(), b"done");
+                return Ok(());
             }
         }
     }
