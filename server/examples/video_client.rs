@@ -13,7 +13,7 @@ use std::{
 use prost::Message;
 
 use aqua_server::net::tls;
-use aqua_server::protocol::v1;
+use aqua_server::protocol::{capability, v1, ClientMessage, PROTOCOL_VERSION};
 
 async fn read_message(recv: &mut quinn::RecvStream) -> Option<(v1::WindowVideoStreamHeader, Vec<u8>)> {
     let mut len = [0u8; 4];
@@ -51,6 +51,21 @@ async fn main() {
     endpoint.set_default_client_config(client_config(fingerprint));
     let connection = endpoint.connect(addr, "aqua").unwrap().await.expect("connect");
     println!("connected to {addr}");
+
+    // Handshake so the server counts us as a SURFACE_VIDEO consumer (the video
+    // gate only produces video while a client wants it).
+    {
+        let (mut send, _recv) = connection.open_bi().await.expect("open_bi");
+        let hello = ClientMessage::Hello(v1::ClientHello {
+            protocol_version: PROTOCOL_VERSION,
+            client_session_id: "video-probe".into(),
+            capabilities: Some(v1::Capabilities {
+                bits: capability::PHASE_3B | capability::SURFACE_VIDEO,
+            }),
+            client_name: "video_client".into(),
+        });
+        send.write_all(&hello.encode()).await.expect("hello");
+    }
 
     let counters: Arc<Mutex<HashMap<String, u64>>> = Arc::new(Mutex::new(HashMap::new()));
     let deadline = Instant::now() + Duration::from_secs(seconds);
