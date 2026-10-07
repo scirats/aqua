@@ -1,5 +1,7 @@
 use std::{collections::HashMap, sync::Arc, time::Instant};
 
+use bytes::Bytes;
+
 use smithay::{
     desktop::PopupManager,
     input::{Seat, SeatState},
@@ -33,9 +35,12 @@ use crate::{
         ClientKey, RemoteBufferInfo, RemoteEvent, RemoteSurfaceId, RemoteWindowId, WindowRegistry,
     },
     events::{RemoteEventSink, TracingEventSink},
-    gpu::{GpuBufferImporter, NullGpuImporter, NullVideoEncoder, VideoEncoder, VideoEncoderSession},
-    net::{FrameSink, ServerEvent, VideoSink},
-    protocol::{adapters, v1, ServerMessage},
+    gpu::{
+        DmabufFormat, FrameSource, GpuBufferImporter, GpuFrame, NullGpuImporter, NullVideoEncoder,
+        SyncState, VideoChroma, VideoCodec, VideoEncoder, VideoEncoderConfig, VideoEncoderSession,
+    },
+    net::{FrameSink, ServerEvent, VideoConfig, VideoSink},
+    protocol::{adapters, data::SurfaceFrame, v1, ServerMessage},
 };
 
 use super::output::create_virtual_output;
@@ -264,6 +269,98 @@ impl AquaState {
     /// Whether the video data plane is active (an encoder with codecs exists).
     pub fn has_video(&self) -> bool {
         !self.video_encoder.supported_codecs().is_empty()
+    }
+
+    /// Encode one committed SHM frame for its window and publish it to the video
+    /// plane. Root toplevel only for this milestone (subsurfaces/popups later).
+    pub(crate) fn encode_video_frame(&mut self, frame: &SurfaceFrame) {
+        if frame.width < crate::gpu::MIN_WIDTH || frame.height < crate::gpu::MIN_HEIGHT {
+            return; // below the VCN minimum; padded composition is a later step
+        }
+        let Some(sink) = self.video_sink.clone() else {
+            return;
+        };
+        let window_id = RemoteWindowId::new(&frame.window_id);
+        let encoder = self.video_encoder.clone();
+        let config = VideoEncoderConfig {
+            codec: VideoCodec::Hevc,
+            chroma: VideoChroma::Nv12,
+            width: frame.width,
+            height: frame.height,
+            frame_rate: 60,
+            bitrate_kbps: 8_000,
+            gop: 0,
+            low_latency: true,
+        };
+
+        // Repack rows to tightly packed BGRA (drop stride padding). wl_shm
+        // ARGB8888/XRGB8888 are BGRA/BGRX in memory, which is what ffmpeg's
+        // `bgra` input expects.
+        let stride = frame.stride as usize;
+        let row = frame.width as usize * 4;
+        let needed = stride * frame.height.saturating_sub(1) as usize + row;
+        if frame.data.len() < needed {
+            return;
+        }
+        let mut pixels = Vec::with_capacity(row * frame.height as usize);
+        for y in 0..frame.height as usize {
+            let offset = y * stride;
+            pixels.extend_from_slice(&frame.data[offset..offset + row]);
+        }
+
+        let gpu = GpuFrame {
+            window_id: frame.window_id.clone(),
+            surface_id: frame.surface_id.clone(),
+            width: frame.width,
+            height: frame.height,
+            format: DmabufFormat::new(0x3432_5241, 0), // ARGB8888
+            source: FrameSource::Shm,
+            sync: SyncState::Ready,
+            planes: Vec::new(),
+            data: Some(Bytes::from(pixels)),
+        };
+
+        let (outcome, codec_config) = {
+            use std::collections::hash_map::Entry;
+            let session = match self.video_sessions.entry(window_id.clone()) {
+                Entry::Occupied(entry) => entry.into_mut(),
+                Entry::Vacant(vacant) => match encoder.create_session(config) {
+                    Ok(session) => vacant.insert(session),
+                    Err(error) => {
+                        tracing::warn!(window = %frame.window_id, %error, "video.session_failed");
+                        return;
+                    }
+                },
+            };
+            if session.config().width != frame.width || session.config().height != frame.height {
+                let _ = session.reconfigure(frame.width, frame.height);
+            }
+            let outcome = session.encode(&gpu);
+            (outcome, session.take_codec_config())
+        };
+
+        match outcome {
+            Ok(Some(encoded)) => {
+                if let Some(codec_config) = codec_config {
+                    sink.submit_config(
+                        &frame.window_id,
+                        VideoConfig {
+                            codec: VideoCodec::Hevc,
+                            chroma: VideoChroma::Nv12,
+                            width: frame.width,
+                            height: frame.height,
+                            codec_config: codec_config.to_vec(),
+                        },
+                    );
+                }
+                sink.submit_frame(encoded);
+            }
+            Ok(None) => {}
+            Err(error) => {
+                tracing::warn!(window = %frame.window_id, %error, "video.encode_failed");
+                self.video_sessions.remove(&window_id);
+            }
+        }
     }
 
     /// Monotonic per-surface frame id.

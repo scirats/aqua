@@ -86,11 +86,21 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     // Phase 3C GPU/video switch. The default build has no GPU
     // (`docs/GPU_PIPELINE.md`), so the null importer/encoder keep Aqua on the
     // SHM-only path: no `zwp_linux_dmabuf_v1` global, no `SURFACE_VIDEO`.
-    // A real RTX 2060 build substitutes a concrete importer/encoder here.
-    data.state.install_gpu(
-        std::sync::Arc::new(gpu::NullGpuImporter),
-        std::sync::Arc::new(gpu::NullVideoEncoder),
-    );
+    // On this machine we have a real AMD VA-API encoder (ffmpeg backend); when
+    // present, video is advertised while dmabuf stays off (importer is null) —
+    // the SHM -> encoder -> VideoHub path.
+    let encoder: std::sync::Arc<dyn gpu::VideoEncoder> = {
+        let vaapi = gpu::FfmpegVaapiEncoder::from_env();
+        if vaapi.is_available() {
+            tracing::info!(codec = "hevc/h264", "video: ffmpeg-vaapi encoder available");
+            std::sync::Arc::new(vaapi)
+        } else {
+            tracing::info!("video: no VA-API encoder; staying SHM-only");
+            std::sync::Arc::new(gpu::NullVideoEncoder)
+        }
+    };
+    data.state
+        .install_gpu(std::sync::Arc::new(gpu::NullGpuImporter), encoder);
     event_loop
         .handle()
         .insert_source(net_rx, |event, _, data| {

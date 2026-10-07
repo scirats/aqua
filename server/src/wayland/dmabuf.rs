@@ -72,6 +72,7 @@ pub fn gpu_frame_from_dmabuf(dmabuf: &Dmabuf) -> std::io::Result<GpuFrame> {
         // that the importer synchronize before consuming (see docs/VIDEO.md).
         sync: SyncState::Unknown,
         planes,
+        data: None,
     })
 }
 

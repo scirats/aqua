@@ -140,6 +140,15 @@ fn handle_commit(
                 bytes = frame.payload_len(),
                 "frame.captured"
             );
+            // Video plane (phase 3C): encode the root toplevel commit too.
+            if state.has_video()
+                && matches!(
+                    state.registry.surface_kind(sid),
+                    Some(RemoteSurfaceKind::Toplevel)
+                )
+            {
+                state.encode_video_frame(&frame);
+            }
             sink.submit_frame(frame);
         }
     }

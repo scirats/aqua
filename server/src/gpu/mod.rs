@@ -99,6 +99,10 @@ pub struct GpuFrame {
     pub source: FrameSource,
     pub sync: SyncState,
     pub planes: Vec<PlaneFd>,
+    /// CPU pixels for a [`FrameSource::Shm`] frame: tightly packed ARGB
+    /// (`width * 4` bytes per row, `width * height * 4` total). `None` for dmabuf
+    /// frames, whose pixels live in `planes`.
+    pub data: Option<Bytes>,
 }
 
 impl GpuFrame {
@@ -238,9 +242,17 @@ impl std::error::Error for EncodeError {}
 pub trait VideoEncoderSession: Send {
     fn config(&self) -> &VideoEncoderConfig;
 
-    /// Encode one imported frame. The returned `EncodedFrame::keyframe` tells the
-    /// transport whether the decoder can start (or resume) here.
-    fn encode(&mut self, frame: &GpuFrame) -> Result<EncodedFrame, EncodeError>;
+    /// Encode one frame. Returns `Ok(None)` when the hardware encoder is still
+    /// buffering and has not produced an access unit yet (encode delay): the
+    /// caller simply calls again with the next frame. This keeps the core thread
+    /// non-blocking.
+    fn encode(&mut self, frame: &GpuFrame) -> Result<Option<EncodedFrame>, EncodeError>;
+
+    /// Codec parameter sets (VPS/SPS/PPS in Annex-B) produced by the encoder,
+    /// to be sent as a `CONFIG` message before the next frame. Taken once.
+    fn take_codec_config(&mut self) -> Option<Bytes> {
+        None
+    }
 
     /// Ask for a keyframe on the next encode (decoder reset, dropped GOP, resize,
     /// reconnection).
@@ -265,8 +277,10 @@ pub trait VideoEncoder: Send + Sync {
 }
 
 mod null;
+mod vaapi;
 
 pub use null::{NullGpuImporter, NullVideoEncoder};
+pub use vaapi::{FfmpegVaapiEncoder, MIN_HEIGHT, MIN_WIDTH};
 
 #[cfg(test)]
 mod tests {
@@ -285,6 +299,7 @@ mod tests {
             source: FrameSource::Dmabuf,
             sync: SyncState::Ready,
             planes: Vec::new(),
+            data: None,
         };
         assert!(matches!(
             importer.import(frame),
