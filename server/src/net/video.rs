@@ -301,15 +301,19 @@ async fn video_writer(
         return;
     }
 
+    let mut have_config = false;
     loop {
         let (config, frames, closed) = {
             let mut state = state.lock().unwrap();
-            let config = if state.config_pending {
+            // A fresh stream (new connection) must always receive the current
+            // CONFIG before any frame; mid-stream changes use `config_pending`.
+            let want_config = state.config_pending || !have_config;
+            state.config_pending = false;
+            let config = if want_config {
                 state.config.clone()
             } else {
                 None
             };
-            state.config_pending = false;
             let frames: Vec<QueuedFrame> = state.queue.drain(..).collect();
             (config, frames, state.closed)
         };
@@ -327,6 +331,7 @@ async fn video_writer(
             if send.write_all(&message).await.is_err() {
                 return;
             }
+            have_config = true;
         }
 
         for queued in frames {
