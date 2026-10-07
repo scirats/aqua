@@ -202,6 +202,15 @@ message DamageRect {
   uint32 height = 4;
 }
 
+// Discriminator carried by every server-opened data-plane stream header so the
+// client can tell a raw SHM surface stream from an encoded window video stream
+// without guessing. Absent (0) is treated as SURFACE_SHM for compatibility.
+enum DataStreamType {
+  DATA_STREAM_UNSPECIFIED = 0;
+  DATA_STREAM_SURFACE_SHM = 1;
+  DATA_STREAM_WINDOW_VIDEO = 2;
+}
+
 message SurfaceStreamHeader {
   uint32 kind = 1;
   // HELLO
@@ -215,6 +224,8 @@ message SurfaceStreamHeader {
   uint32 format = 8;
   uint64 payload_len = 9;
   repeated DamageRect damage = 10;
+  // Data-stream discriminator (field numbers must stay aligned across headers).
+  uint32 stream_type = 20;
 }
 
 // ---------------------------------------------------------------------------
@@ -286,6 +297,8 @@ message WindowVideoStreamHeader {
   uint64 payload_len = 10;
   // CONFIG: the payload is codec configuration only (VPS/SPS/PPS), no picture.
   bool codec_config = 11;
+  // Data-stream discriminator (== DATA_STREAM_WINDOW_VIDEO for this stream).
+  uint32 stream_type = 20;
 }
 
 // Client -> Server

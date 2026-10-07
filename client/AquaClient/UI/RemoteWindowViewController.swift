@@ -12,11 +12,19 @@ final class RemoteWindowViewController: UIViewController {
     private let remoteInputView = RemoteInputView()
     private let environment = AppEnvironment.shared
 
+    // Phase 3C video pipeline (bring-up decoder + keyframe-aware stream model).
+    private let videoDecoder: VideoDecoding = AVSampleBufferDisplayLayerDecoder()
+    private lazy var videoView: UIView = videoDecoder.view
+    private var videoModel: VideoStreamModel?
+    private var videoFrameTask: Task<Void, Never>?
+    private var videoConfigTask: Task<Void, Never>?
+
     private var observationTask: Task<Void, Never>?
     private var compositionTask: Task<Void, Never>?
     private var lastViewport: RemoteViewport?
     private var currentWindow: RemoteWindow?
     private var hasSurfaceContent = false
+    private var hasVideoContent = false
 
     init(remoteWindowID: RemoteWindowID) {
         self.remoteWindowID = remoteWindowID
@@ -31,6 +39,8 @@ final class RemoteWindowViewController: UIViewController {
     deinit {
         observationTask?.cancel()
         compositionTask?.cancel()
+        videoFrameTask?.cancel()
+        videoConfigTask?.cancel()
     }
 
     override func loadView() {
@@ -41,7 +51,11 @@ final class RemoteWindowViewController: UIViewController {
         imageView.isUserInteractionEnabled = false
         imageView.isHidden = true
 
-        for subview in [surfaceView, imageView] as [UIView] {
+        videoView.backgroundColor = .black
+        videoView.isUserInteractionEnabled = false
+        videoView.isHidden = true
+
+        for subview in [surfaceView, imageView, videoView] as [UIView] {
             subview.translatesAutoresizingMaskIntoConstraints = false
             remoteInputView.addSubview(subview)
             NSLayoutConstraint.activate([
@@ -69,6 +83,7 @@ final class RemoteWindowViewController: UIViewController {
                 self.apply(composition)
             }
         }
+        startVideoPipeline()
     }
 
     override func viewDidAppear(_ animated: Bool) {
@@ -94,6 +109,8 @@ final class RemoteWindowViewController: UIViewController {
     /// Phase 3B: show real pixels once the server streams a composed surface.
     private func apply(_ composition: SurfaceComposition) {
         guard composition.windowID == remoteWindowID.value else { return }
+        // Encoded video takes precedence when the server offers it.
+        guard !hasVideoContent else { return }
         guard let image = composition.image else { return }
         imageView.image = UIImage(cgImage: image)
         if !hasSurfaceContent {
@@ -104,6 +121,48 @@ final class RemoteWindowViewController: UIViewController {
         // Presentation feedback (best-effort; drives future frame callbacks).
         for (surfaceID, frameID) in composition.frameIDs {
             environment.presentedFrame(surfaceID: surfaceID, frameID: frameID)
+        }
+    }
+
+    // MARK: - Phase 3C video pipeline
+
+    private func startVideoPipeline() {
+        let model = VideoStreamModel(windowID: remoteWindowID.value)
+        model.onRequestKeyframe = { [weak self] windowID, reason in
+            self?.environment.requestKeyframe(windowID: windowID, reason: reason)
+        }
+        videoModel = model
+
+        videoConfigTask = Task { [weak self] in
+            guard let self else { return }
+            for await configuration in self.environment.videoConfigurations() {
+                guard configuration.windowID == self.remoteWindowID.value else { continue }
+                self.videoDecoder.configure(configuration)
+                self.videoModel?.apply(configuration)
+            }
+        }
+        videoFrameTask = Task { [weak self] in
+            guard let self else { return }
+            for await frame in self.environment.videoFrames() {
+                guard frame.windowID == self.remoteWindowID.value else { continue }
+                self.consume(frame)
+            }
+        }
+    }
+
+    private func consume(_ frame: EncodedVideoFrame) {
+        guard let videoModel else { return }
+        switch videoModel.receive(frame) {
+        case .forward(let decodable):
+            videoDecoder.decode(decodable)
+            if !hasVideoContent {
+                hasVideoContent = true
+                surfaceView.isHidden = true
+                imageView.isHidden = true
+                videoView.isHidden = false
+            }
+        case .requestedKeyframe, .waitingForKeyframe, .droppedStale, .ignored:
+            break
         }
     }
 

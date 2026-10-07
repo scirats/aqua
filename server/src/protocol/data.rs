@@ -110,6 +110,7 @@ pub fn hello_stream_message(surface_id: &str, window_id: &str) -> Bytes {
         kind: v1::SurfaceStreamKind::SurfaceStreamHello as u32,
         surface_id: surface_id.to_string(),
         window_id: window_id.to_string(),
+        stream_type: v1::DataStreamType::DataStreamSurfaceShm as u32,
         ..Default::default()
     };
     frame::encode_stream_message(&header.encode_to_vec(), &[])
@@ -137,6 +138,7 @@ pub fn frame_stream_message(frame_data: &SurfaceFrame) -> Bytes {
                 height: d.height,
             })
             .collect(),
+        stream_type: v1::DataStreamType::DataStreamSurfaceShm as u32,
     };
     frame::encode_stream_message(&header.encode_to_vec(), &frame_data.data)
 }
@@ -251,6 +253,10 @@ mod tests {
         );
         assert_eq!(header.surface_id, "surface-1");
         assert_eq!(header.window_id, "window-1");
+        assert_eq!(
+            header.stream_type,
+            v1::DataStreamType::DataStreamSurfaceShm as u32
+        );
         assert_eq!(bytes.len(), 4 + header_len);
     }
 }

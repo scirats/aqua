@@ -92,6 +92,26 @@ Resultados en `docs/GPU_PIPELINE.md`. Lo esencial:
 - Un buffer dmabuf se **observa** en commit (`frame.dmabuf_attached`:
   fourcc/modifier/planes/dimensiones). No se hace readback.
 
+### Cliente Swift — pipeline de vídeo (fase 3C, avanzado en macOS/Xcode)
+- `Video/VideoTypes.swift`: `WindowVideoConfiguration`, `EncodedVideoFrame`.
+- `Video/VideoStreamModel.swift`: contrato **keyframe-aware** por ventana
+  (espera keyframe, descarta stale por `frameID`, pide keyframe una sola vez,
+  reconstruye al cambiar tamaño/codec). Lógica pura, unit-testeada.
+- `Video/VideoBitstream.swift`: parsing Annex-B → NAL units y conversión a
+  length-prefixed (AVCC/hvcC); extracción de parameter sets H.264/HEVC. Puro y
+  testeado.
+- `Video/VideoDecoding.swift` + `Video/AVSampleBufferDisplayLayerDecoder.swift`:
+  decodificación/presentación con `AVSampleBufferDisplayLayer` (construye
+  `CMVideoFormatDescription` desde los parameter sets del `CONFIG`, enqueue de
+  `CMSampleBuffer`, flush ante `.failed`).
+- Transporte: `QUICRemoteWindowService.videoFrames()` /
+  `videoConfigurations()` / `requestKeyframe(windowID:reason:)`; las streams
+  server→client se discriminan con `DataStreamProbe` (`stream_type`, campo 20)
+  entre SHM y vídeo, sin cambiar el camino SHM.
+- `AppEnvironment` hace fan-out de vídeo por ventana; `RemoteWindowViewController`
+  consume el modelo y presenta la vista de vídeo (el vídeo tiene prioridad sobre
+  el `CGImage` SHM cuando el servidor lo ofrece).
+
 ---
 
 ## 4. Milestones (estado)
@@ -126,8 +146,10 @@ Resultados en `docs/GPU_PIPELINE.md`. Lo esencial:
    `RESEARCHED`.
 9. **encoder configuration**: `low_latency=true`, B-frames=0, lookahead off,
    keyframes bajo demanda, NV12 4:2:0; bitrate/GOP concretos `NOT MEASURED`.
-10. **decoder/presentation strategy**: `AVSampleBufferDisplayLayer` para bring-up,
-    `CVPixelBuffer`+Metal como candidato; **NOT MEASURED** (sin hardware).
+10. **decoder/presentation strategy**: `AVSampleBufferDisplayLayer` implementado
+    como bring-up en el client (`AVSampleBufferDisplayLayerDecoder`),
+    `CVPixelBuffer`+Metal como candidato si la medición lo exige; el rendimiento
+    real es **NOT MEASURED** (sin hardware/stream).
 11. **per-surface vs per-window**: **per-window (Modelo B)**; evidencia =
     acotamiento de sesiones NVENC/VideoToolbox y alineación con
     `xdg_toplevel ↔ UIWindowScene`; **NOT MEASURED** en hardware.
@@ -148,7 +170,8 @@ Resultados en `docs/GPU_PIPELINE.md`. Lo esencial:
     `weston-simple-damage`, snapshot `windows=2 surfaces=2`, `frame_client`
     recibió 4 frames (250×250 y 300×200).
 22. **tests**: servidor **44** (24 lib + 7 surface_tree + 2 transporte + 10
-    registro + 1 doctest); cliente **66** (61 previos + 5 de protocolo 3C).
+    registro + 1 doctest); cliente **78** (66 previos + 6 de `VideoStreamModel`
+    + 5 de `VideoBitstream` + 1 de discriminador `DataStreamProbe`).
     Todos en verde; `cargo clippy --all-targets` sin warnings.
 23. **deuda técnica**: ver §6.
 
@@ -165,8 +188,10 @@ Resultados en `docs/GPU_PIPELINE.md`. Lo esencial:
   colas acotadas con conciencia de keyframe) **no implementado** todavía; el
   contrato de wire y las abstracciones están listos. No se codificó a ciegas sin
   poder probarlo.
-- **Decodificador iPad** (`VideoDecoder` + `AVSampleBufferDisplayLayer`/Metal) no
-  implementado.
+- **Decodificador iPad**: implementado el bring-up
+  (`AVSampleBufferDisplayLayerDecoder`) y su contrato (`VideoStreamModel`,
+  `VideoDecoding`), pero **sin validar** contra un stream real. El camino
+  `CVPixelBuffer`+Metal queda como alternativa a medir.
 - **Frame callback** sigue a 60 Hz; el modelo B/C queda para medir (docs/VIDEO.md §6).
 - **Sync explícita** (`linux-drm-syncobj`) diferida; Smithay la expone sólo con
   `backend_drm`, que no se habilita en headless.

@@ -29,8 +29,12 @@ final class AppEnvironment {
     private var connectionStateTask: Task<Void, Never>?
     private var frameTask: Task<Void, Never>?
     private var surfaceTask: Task<Void, Never>?
+    private var videoFrameTask: Task<Void, Never>?
+    private var videoConfigTask: Task<Void, Never>?
     private var surfaceModels: [String: WindowSurfaceModel] = [:]
     private var compositionContinuations: [UUID: AsyncStream<SurfaceComposition>.Continuation] = [:]
+    private var videoFrameContinuations: [UUID: AsyncStream<EncodedVideoFrame>.Continuation] = [:]
+    private var videoConfigContinuations: [UUID: AsyncStream<WindowVideoConfiguration>.Continuation] = [:]
     private var currentConnectionState: RemoteConnectionState = .disconnected
     private var started = false
 
@@ -175,6 +179,45 @@ final class AppEnvironment {
         return stream
     }
 
+    /// Encoded video frames for all windows (phase 3C). The video view filters
+    /// by `windowID`, exactly like `surfaceCompositions()`.
+    func videoFrames() -> AsyncStream<EncodedVideoFrame> {
+        let (stream, continuation) = AsyncStream.makeStream(
+            of: EncodedVideoFrame.self,
+            bufferingPolicy: .bufferingNewest(8)
+        )
+        let token = UUID()
+        videoFrameContinuations[token] = continuation
+        continuation.onTermination = { [weak self] _ in
+            Task { @MainActor in
+                self?.videoFrameContinuations[token] = nil
+            }
+        }
+        return stream
+    }
+
+    /// Video configurations for all windows.
+    func videoConfigurations() -> AsyncStream<WindowVideoConfiguration> {
+        let (stream, continuation) = AsyncStream.makeStream(
+            of: WindowVideoConfiguration.self,
+            bufferingPolicy: .bufferingNewest(4)
+        )
+        let token = UUID()
+        videoConfigContinuations[token] = continuation
+        continuation.onTermination = { [weak self] _ in
+            Task { @MainActor in
+                self?.videoConfigContinuations[token] = nil
+            }
+        }
+        return stream
+    }
+
+    /// Ask the server encoder for a keyframe (video backpressure contract).
+    func requestKeyframe(windowID: String, reason: String) {
+        guard let quic = quicService else { return }
+        Task { await quic.requestKeyframe(windowID: windowID, reason: reason) }
+    }
+
     /// Connection lifecycle for the configuration UI.
     func connectionUpdates() -> AsyncStream<RemoteConnectionState> {
         let (stream, continuation) = AsyncStream.makeStream(
@@ -248,6 +291,8 @@ final class AppEnvironment {
     private func observeSurfaceData(_ quic: QUICRemoteWindowService) {
         frameTask?.cancel()
         surfaceTask?.cancel()
+        videoFrameTask?.cancel()
+        videoConfigTask?.cancel()
         frameTask = Task { [weak self] in
             let stream = await quic.frames()
             for await frame in stream {
@@ -258,6 +303,26 @@ final class AppEnvironment {
             let stream = await quic.surfaceUpdates()
             for await surfaces in stream {
                 self?.apply(surfaces: surfaces)
+            }
+        }
+        // Phase 3C: fan out encoded video frames/configs. Empty until the server
+        // implements the video data plane; harmless otherwise.
+        videoFrameTask = Task { [weak self] in
+            let stream = await quic.videoFrames()
+            for await frame in stream {
+                guard let self else { return }
+                for continuation in self.videoFrameContinuations.values {
+                    continuation.yield(frame)
+                }
+            }
+        }
+        videoConfigTask = Task { [weak self] in
+            let stream = await quic.videoConfigurations()
+            for await configuration in stream {
+                guard let self else { return }
+                for continuation in self.videoConfigContinuations.values {
+                    continuation.yield(configuration)
+                }
             }
         }
     }

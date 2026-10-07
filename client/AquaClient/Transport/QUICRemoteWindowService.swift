@@ -33,6 +33,8 @@ actor QUICRemoteWindowService: RemoteWindowService {
     private var pendingViewports: [String: RemoteViewport] = [:]
     private var frameContinuations: [UUID: AsyncStream<SurfaceFrameData>.Continuation] = [:]
     private var surfaceContinuations: [UUID: AsyncStream<[AquaSurface]>.Continuation] = [:]
+    private var videoFrameContinuations: [UUID: AsyncStream<EncodedVideoFrame>.Continuation] = [:]
+    private var videoConfigContinuations: [UUID: AsyncStream<WindowVideoConfiguration>.Continuation] = [:]
     private var clientSessionID = UUID().uuidString
 
     // MARK: - RemoteWindowService
@@ -79,8 +81,48 @@ actor QUICRemoteWindowService: RemoteWindowService {
         return stream
     }
 
+    /// Encoded window video frames (one stream per RemoteWindow, latest-wins on
+    /// the consumer). Empty until the server implements the video data plane.
+    func videoFrames() -> AsyncStream<EncodedVideoFrame> {
+        let (stream, continuation) = AsyncStream.makeStream(
+            of: EncodedVideoFrame.self,
+            bufferingPolicy: .bufferingNewest(8)
+        )
+        let token = UUID()
+        videoFrameContinuations[token] = continuation
+        continuation.onTermination = { [weak self] _ in
+            Task { await self?.removeVideoFrameContinuation(token) }
+        }
+        return stream
+    }
+
+    /// Window video configurations (control-plane `WindowVideoConfig` and
+    /// data-plane `CONFIG`). The data-plane one carries the codec parameter sets.
+    func videoConfigurations() -> AsyncStream<WindowVideoConfiguration> {
+        let (stream, continuation) = AsyncStream.makeStream(
+            of: WindowVideoConfiguration.self,
+            bufferingPolicy: .bufferingNewest(4)
+        )
+        let token = UUID()
+        videoConfigContinuations[token] = continuation
+        continuation.onTermination = { [weak self] _ in
+            Task { await self?.removeVideoConfigContinuation(token) }
+        }
+        return stream
+    }
+
+    /// Ask the server encoder for a keyframe (decoder reset / dropped GOP).
+    func requestKeyframe(windowID: String, reason: String) async {
+        var message = RequestKeyframeMessage()
+        message.windowID = windowID
+        message.reason = reason
+        await send(.requestKeyframe(message))
+    }
+
     private func removeFrameContinuation(_ token: UUID) { frameContinuations[token] = nil }
     private func removeSurfaceContinuation(_ token: UUID) { surfaceContinuations[token] = nil }
+    private func removeVideoFrameContinuation(_ token: UUID) { videoFrameContinuations[token] = nil }
+    private func removeVideoConfigContinuation(_ token: UUID) { videoConfigContinuations[token] = nil }
 
     /// Report that the iPad presented a surface frame (feedback loop).
     func presentedFrame(surfaceID: String, frameID: UInt64) async {
@@ -224,41 +266,55 @@ actor QUICRemoteWindowService: RemoteWindowService {
         try await stream.send(AquaClientMessage.hello(hello).encodeFrame())
         log.info("handshake.client session=\(self.clientSessionID, privacy: .public)")
 
-        // Accept server-opened unidirectional surface streams (data plane).
+        // Accept server-opened unidirectional data-plane streams (raw SHM
+        // surface streams and/or encoded window video streams).
         Task { [weak self] in
             guard let self else { return }
             try? await connection.inboundStreams { inbound in
-                await self.readSurfaceStream(inbound)
+                await self.readInboundStream(inbound)
             }
         }
 
         try await receiveLoop(stream: stream)
     }
 
-    /// Reads one data-plane surface stream: a HELLO then a sequence of frames.
-    private func readSurfaceStream(_ stream: QUIC.Stream<QUICStream>) async {
+    /// Reads the first header of a server-opened data stream, then dispatches to
+    /// the SHM surface reader or the window video reader based on `stream_type`.
+    private func readInboundStream(_ stream: QUIC.Stream<QUICStream>) async {
+        do {
+            let firstHeader = try await readRawHeader(stream)
+            let probe = (try? DataStreamProbe.decodeBody(firstHeader)) ?? DataStreamProbe()
+            if probe.streamType == AquaProtocol.DataStreamType.windowVideo {
+                try await readWindowVideoStream(stream, firstHeader: firstHeader)
+            } else {
+                try await readSurfaceStream(stream, firstHeader: firstHeader)
+            }
+        } catch {
+            return
+        }
+    }
+
+    /// Reads one raw SHM surface stream: a HELLO then a sequence of frames.
+    private func readSurfaceStream(_ stream: QUIC.Stream<QUICStream>, firstHeader: Data) async throws {
+        var headerData = firstHeader
         var surfaceID = ""
         while !Task.isCancelled {
-            let message: (header: SurfaceStreamHeaderMessage, payload: Data)
-            do {
-                message = try await readStreamMessage(stream)
-            } catch {
-                return
-            }
-            switch message.header.kind {
+            let header = try SurfaceStreamHeaderMessage.decodeBody(headerData)
+            let payload = try await readPayload(stream, length: header.payloadLen)
+            switch header.kind {
             case AquaProtocol.SurfaceStreamKind.hello:
-                surfaceID = message.header.surfaceID
+                surfaceID = header.surfaceID
                 log.debug("surface.stream.hello surface=\(surfaceID, privacy: .public)")
             case AquaProtocol.SurfaceStreamKind.frame:
                 let frame = SurfaceFrameData(
-                    surfaceID: message.header.surfaceID.isEmpty ? surfaceID : message.header.surfaceID,
-                    windowID: message.header.windowID,
-                    frameID: message.header.frameID,
-                    width: message.header.width,
-                    height: message.header.height,
-                    stride: message.header.stride,
-                    format: message.header.format,
-                    data: message.payload
+                    surfaceID: header.surfaceID.isEmpty ? surfaceID : header.surfaceID,
+                    windowID: header.windowID,
+                    frameID: header.frameID,
+                    width: header.width,
+                    height: header.height,
+                    stride: header.stride,
+                    format: header.format,
+                    data: payload
                 )
                 for continuation in frameContinuations.values {
                     continuation.yield(frame)
@@ -266,26 +322,72 @@ actor QUICRemoteWindowService: RemoteWindowService {
             default:
                 break
             }
+            headerData = try await readRawHeader(stream)
         }
     }
 
-    private func readStreamMessage(_ stream: QUIC.Stream<QUICStream>) async throws -> (SurfaceStreamHeaderMessage, Data) {
+    /// Reads one encoded window video stream: HELLO, CONFIG and FRAME messages.
+    private func readWindowVideoStream(_ stream: QUIC.Stream<QUICStream>, firstHeader: Data) async throws {
+        var headerData = firstHeader
+        var windowID = ""
+        while !Task.isCancelled {
+            let header = try WindowVideoStreamHeaderMessage.decodeBody(headerData)
+            let payload = try await readPayload(stream, length: header.payloadLen)
+            let resolvedWindowID = header.windowID.isEmpty ? windowID : header.windowID
+            switch header.kind {
+            case AquaProtocol.WindowVideoStreamKind.hello:
+                windowID = header.windowID
+                log.debug("window.video.hello window=\(windowID, privacy: .public)")
+            case AquaProtocol.WindowVideoStreamKind.config:
+                let configuration = WindowVideoConfiguration(
+                    windowID: resolvedWindowID,
+                    codec: header.codec,
+                    chroma: header.chroma,
+                    width: header.width,
+                    height: header.height,
+                    codecConfiguration: header.codecConfig ? payload : nil
+                )
+                for continuation in videoConfigContinuations.values {
+                    continuation.yield(configuration)
+                }
+            case AquaProtocol.WindowVideoStreamKind.frame:
+                let frame = EncodedVideoFrame(
+                    windowID: resolvedWindowID,
+                    codec: header.codec,
+                    chroma: header.chroma,
+                    width: header.width,
+                    height: header.height,
+                    frameID: header.frameID,
+                    keyframe: header.keyframe,
+                    ptsUS: header.ptsUS,
+                    data: payload
+                )
+                for continuation in videoFrameContinuations.values {
+                    continuation.yield(frame)
+                }
+            default:
+                break
+            }
+            headerData = try await readRawHeader(stream)
+        }
+    }
+
+    private func readRawHeader(_ stream: QUIC.Stream<QUICStream>) async throws -> Data {
         let lengthData = try await stream.receive(exactly: 4).content
         let bytes = [UInt8](lengthData)
         let headerLength = (Int(bytes[0]) << 24) | (Int(bytes[1]) << 16) | (Int(bytes[2]) << 8) | Int(bytes[3])
         guard headerLength > 0, headerLength <= 64 * 1024 else {
-            throw ConnectionFailure(kind: .other, detail: "bad surface header", isFatal: true)
+            throw ConnectionFailure(kind: .other, detail: "bad stream header", isFatal: true)
         }
-        let headerData = try await stream.receive(exactly: headerLength).content
-        let header = try SurfaceStreamHeaderMessage.decodeBody(headerData)
-        var payload = Data()
-        if header.payloadLen > 0 {
-            guard header.payloadLen <= 64 * 1024 * 1024 else {
-                throw ConnectionFailure(kind: .other, detail: "frame too large", isFatal: true)
-            }
-            payload = try await stream.receive(exactly: Int(header.payloadLen)).content
+        return try await stream.receive(exactly: headerLength).content
+    }
+
+    private func readPayload(_ stream: QUIC.Stream<QUICStream>, length: UInt64) async throws -> Data {
+        guard length <= 64 * 1024 * 1024 else {
+            throw ConnectionFailure(kind: .other, detail: "payload too large", isFatal: true)
         }
-        return (header, payload)
+        guard length > 0 else { return Data() }
+        return try await stream.receive(exactly: Int(length)).content
     }
 
     private func receiveLoop(stream: QUIC.Stream<QUICStream>) async throws {
@@ -331,6 +433,18 @@ actor QUICRemoteWindowService: RemoteWindowService {
             let events = session.handleSnapshot(snapshot)
             log.info("snapshot.received revision=\(snapshot.revision, privacy: .public) windows=\(snapshot.windows.count, privacy: .public)")
             emit(events)
+        case .windowVideoConfig(let config):
+            let configuration = WindowVideoConfiguration(
+                windowID: config.windowID,
+                codec: config.codec,
+                chroma: config.chroma,
+                width: config.width,
+                height: config.height,
+                codecConfiguration: nil
+            )
+            for continuation in videoConfigContinuations.values {
+                continuation.yield(configuration)
+            }
         default:
             emit(session.handle(message))
         }

@@ -613,6 +613,7 @@ struct SurfaceStreamHeaderMessage: Equatable {
     var format: UInt32 = 0
     var payloadLen: UInt64 = 0
     var damage: [DamageRectMessage] = []
+    var streamType: UInt32 = AquaProtocol.DataStreamType.surfaceShm
 
     static func decodeBody(_ data: Data) throws -> SurfaceStreamHeaderMessage {
         var reader = ProtobufReader(data)
@@ -629,7 +630,29 @@ struct SurfaceStreamHeaderMessage: Equatable {
             case 8: value.format = UInt32(try reader.readVarint())
             case 9: value.payloadLen = try reader.readVarint()
             case 10: value.damage.append(try DamageRectMessage.decodeBody(try reader.readLengthDelimited()))
+            case 20: value.streamType = UInt32(try reader.readVarint())
             default: try reader.skip(wire)
+            }
+        }
+        return value
+    }
+}
+
+/// Server-opened data-plane stream discriminator. Decoding a header into this
+/// tiny message reads only `stream_type` (field 20) and skips everything else,
+/// so it works for both `SurfaceStreamHeader` and `WindowVideoStreamHeader`
+/// without knowing which one it is. A missing field (0) means SHM.
+struct DataStreamProbe: Equatable {
+    var streamType: UInt32 = 0
+
+    static func decodeBody(_ data: Data) throws -> DataStreamProbe {
+        var reader = ProtobufReader(data)
+        var value = DataStreamProbe()
+        while let (field, wire) = try reader.readTag() {
+            if field == 20 {
+                value.streamType = UInt32(try reader.readVarint())
+            } else {
+                try reader.skip(wire)
             }
         }
         return value
@@ -665,6 +688,7 @@ struct WindowVideoStreamHeaderMessage: Equatable {
     var ptsUS: UInt64 = 0
     var payloadLen: UInt64 = 0
     var codecConfig = false
+    var streamType: UInt32 = 0
 
     static func decodeBody(_ data: Data) throws -> WindowVideoStreamHeaderMessage {
         var reader = ProtobufReader(data)
@@ -682,6 +706,7 @@ struct WindowVideoStreamHeaderMessage: Equatable {
             case 9: value.ptsUS = try reader.readVarint()
             case 10: value.payloadLen = try reader.readVarint()
             case 11: value.codecConfig = try reader.readVarint() != 0
+            case 20: value.streamType = UInt32(try reader.readVarint())
             default: try reader.skip(wire)
             }
         }

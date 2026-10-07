@@ -157,14 +157,15 @@ final class ProtocolCodecTests: XCTestCase {
     }
 
     func testDecodeWindowVideoStreamHello() throws {
-        let header = try decodeVideoStreamHeader("0000000c0801120877696e646f772d31")
+        let header = try decodeVideoStreamHeader("0000000f0801120877696e646f772d31a00102")
         XCTAssertEqual(header.kind, AquaProtocol.WindowVideoStreamKind.hello)
         XCTAssertEqual(header.windowID, "window-1")
+        XCTAssertEqual(header.streamType, AquaProtocol.DataStreamType.windowVideo)
     }
 
     func testDecodeWindowVideoStreamFrame() throws {
         let header = try decodeVideoStreamHeader(
-            "000000200803120877696e646f772d311802200128a00630d804382a400148c0843d5003aabbcc"
+            "000000230803120877696e646f772d311802200128a00630d804382a400148c0843d5003a00102aabbcc"
         )
         XCTAssertEqual(header.kind, AquaProtocol.WindowVideoStreamKind.frame)
         XCTAssertEqual(header.windowID, "window-1")
@@ -181,11 +182,30 @@ final class ProtocolCodecTests: XCTestCase {
 
     func testDecodeWindowVideoStreamConfigCarriesCodecConfigFlag() throws {
         let header = try decodeVideoStreamHeader(
-            "0000001a0802120877696e646f772d311802200128a00630d80450045801deadbeef"
+            "0000001d0802120877696e646f772d311802200128a00630d80450045801a00102deadbeef"
         )
         XCTAssertEqual(header.kind, AquaProtocol.WindowVideoStreamKind.config)
         XCTAssertEqual(header.payloadLen, 4)
         XCTAssertTrue(header.codecConfig)
+        XCTAssertEqual(header.streamType, AquaProtocol.DataStreamType.windowVideo)
+    }
+
+    /// The stream discriminator must classify SHM and video without decoding the
+    /// full header of either type.
+    func testDataStreamProbeClassifiesShmAndVideo() throws {
+        let surface = data(hex: "0000001a08011209737572666163652d311a0877696e646f772d31a00101")
+        let surfaceHeader = try probeStreamHeader(surface)
+        XCTAssertEqual(surfaceHeader.streamType, AquaProtocol.DataStreamType.surfaceShm)
+
+        let video = data(hex: "0000000f0801120877696e646f772d31a00102")
+        let videoHeader = try probeStreamHeader(video)
+        XCTAssertEqual(videoHeader.streamType, AquaProtocol.DataStreamType.windowVideo)
+    }
+
+    private func probeStreamHeader(_ bytes: Data) throws -> DataStreamProbe {
+        let headerLength = (Int(bytes[0]) << 24) | (Int(bytes[1]) << 16)
+            | (Int(bytes[2]) << 8) | Int(bytes[3])
+        return try DataStreamProbe.decodeBody(bytes.subdata(in: 4..<(4 + headerLength)))
     }
 
     func testUnknownTagIsIgnored() {

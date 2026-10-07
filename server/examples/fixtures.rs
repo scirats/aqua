@@ -5,7 +5,7 @@
 //!
 //! The Swift tests decode/encode these exact bytes.
 
-use aqua_server::protocol::{video, v1, ClientMessage, ServerMessage};
+use aqua_server::protocol::{data, video, v1, ClientMessage, ServerMessage};
 use prost::Message;
 
 fn hex(bytes: &[u8]) -> String {
@@ -108,6 +108,12 @@ fn main() {
     println!("SV_WINDOWINFO {}", hex(&window().encode_to_vec()));
     println!("SV_WINDOW_VIDEO_CONFIG {}", hex(&video_config.encode()));
     println!("CL_REQUEST_KEYFRAME {}", hex(&request_keyframe.encode()));
+
+    // Data-plane stream discriminator: SHM surface stream HELLO.
+    println!(
+        "VD_SURFACE_HELLO {}",
+        hex(&data::hello_stream_message("surface-1", "window-1"))
+    );
 
     // Phase 3C video data plane (window video stream).
     println!(

@@ -19,6 +19,7 @@ pub fn hello_window_stream_message(window_id: &str) -> Bytes {
     let header = v1::WindowVideoStreamHeader {
         kind: v1::WindowVideoStreamKind::WindowVideoStreamHello as u32,
         window_id: window_id.to_string(),
+        stream_type: v1::DataStreamType::DataStreamWindowVideo as u32,
         ..Default::default()
     };
     frame::encode_stream_message(&header.encode_to_vec(), &[])
@@ -45,6 +46,7 @@ pub fn config_stream_message(
         height,
         payload_len: payload.len() as u64,
         codec_config,
+        stream_type: v1::DataStreamType::DataStreamWindowVideo as u32,
         ..Default::default()
     };
     frame::encode_stream_message(&header.encode_to_vec(), payload)
@@ -75,6 +77,7 @@ pub fn frame_stream_message(
         pts_us,
         payload_len: payload.len() as u64,
         codec_config: false,
+        stream_type: v1::DataStreamType::DataStreamWindowVideo as u32,
     };
     frame::encode_stream_message(&header.encode_to_vec(), payload)
 }
@@ -97,6 +100,10 @@ mod tests {
             v1::WindowVideoStreamKind::WindowVideoStreamHello as u32
         );
         assert_eq!(header.window_id, "window-7");
+        assert_eq!(
+            header.stream_type,
+            v1::DataStreamType::DataStreamWindowVideo as u32
+        );
         assert_eq!(bytes.len(), 4 + header.encoded_len());
     }
 

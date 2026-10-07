@@ -79,6 +79,12 @@ enum AquaProtocol {
         static let frame: UInt32 = 3
     }
 
+    /// Server-opened data-plane stream discriminator (`stream_type` field 20).
+    enum DataStreamType {
+        static let surfaceShm: UInt32 = 1
+        static let windowVideo: UInt32 = 2
+    }
+
     enum SurfaceRole {
         static let toplevel: UInt32 = 1
         static let subsurface: UInt32 = 2
