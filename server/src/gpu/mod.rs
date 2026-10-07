@@ -277,9 +277,11 @@ pub trait VideoEncoder: Send + Sync {
 }
 
 mod null;
+mod observe;
 mod vaapi;
 
 pub use null::{NullGpuImporter, NullVideoEncoder};
+pub use observe::ObserveGpuImporter;
 pub use vaapi::{FfmpegVaapiEncoder, MIN_HEIGHT, MIN_WIDTH};
 
 #[cfg(test)]

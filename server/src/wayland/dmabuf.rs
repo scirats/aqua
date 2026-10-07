@@ -97,7 +97,7 @@ impl DmabufHandler for AquaState {
         };
 
         tracing::debug!(
-            target: "aqua::frame",
+            target: "aqua::dmabuf",
             importer = self.gpu_importer.name(),
             width = frame.width,
             height = frame.height,

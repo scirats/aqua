@@ -1,5 +1,7 @@
 use std::{collections::HashMap, sync::Arc, time::Instant};
 
+use std::os::unix::fs::MetadataExt;
+
 use bytes::Bytes;
 
 use smithay::{
@@ -258,9 +260,35 @@ impl AquaState {
             return;
         }
         let count = formats.len();
-        let global = self
-            .dmabuf_state
-            .create_global::<AquaState>(&self.display_handle, formats);
+        // Announce a default feedback carrying the real DRM device, so EGL
+        // clients (Mesa) can obtain the render node and allocate dmabufs.
+        let device = std::env::var("AQUA_VAAPI_DEVICE")
+            .unwrap_or_else(|_| "/dev/dri/renderD128".to_string());
+        let plain_formats = formats.clone();
+        let global = match std::fs::metadata(&device).map(|meta| meta.rdev()) {
+            Ok(main_device) => {
+                match smithay::wayland::dmabuf::DmabufFeedbackBuilder::new(main_device, formats)
+                    .build()
+                {
+                    Ok(feedback) => self
+                        .dmabuf_state
+                        .create_global_with_default_feedback::<AquaState>(
+                            &self.display_handle,
+                            &feedback,
+                        ),
+                    Err(error) => {
+                        tracing::warn!(%error, "dmabuf: feedback build failed; plain global");
+                        self.dmabuf_state
+                            .create_global::<AquaState>(&self.display_handle, plain_formats)
+                    }
+                }
+            }
+            Err(error) => {
+                tracing::warn!(%error, device, "dmabuf: cannot stat render node; plain global");
+                self.dmabuf_state
+                    .create_global::<AquaState>(&self.display_handle, plain_formats)
+            }
+        };
         tracing::info!(
             importer = self.gpu_importer.name(),
             formats = count,

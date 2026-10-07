@@ -99,8 +99,14 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             std::sync::Arc::new(gpu::NullVideoEncoder)
         }
     };
-    data.state
-        .install_gpu(std::sync::Arc::new(gpu::NullGpuImporter), encoder);
+    let importer: std::sync::Arc<dyn gpu::GpuBufferImporter> =
+        if std::env::var("AQUA_DMABUF").as_deref() == Ok("observe") {
+            tracing::info!("dmabuf: observe importer (advertises real EGL formats)");
+            std::sync::Arc::new(gpu::ObserveGpuImporter::new())
+        } else {
+            std::sync::Arc::new(gpu::NullGpuImporter)
+        };
+    data.state.install_gpu(importer, encoder);
     event_loop
         .handle()
         .insert_source(net_rx, |event, _, data| {
