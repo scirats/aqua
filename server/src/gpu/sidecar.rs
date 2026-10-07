@@ -342,9 +342,11 @@ impl VideoEncoderSession for VaSidecarSession {
         loop {
             match self.responses.try_recv() {
                 Ok(response) if response.kind == KIND_CONFIG => {
+                    tracing::debug!(target: "aqua::dmabuf", len = response.payload.len(), "video.sidecar_response config (encode)");
                     self.codec_config = Some(response.payload);
                 }
                 Ok(response) if response.kind == KIND_RESPONSE_FRAME => {
+                    tracing::debug!(target: "aqua::dmabuf", frame_id = response.frame_id, key = response.keyframe, "video.sidecar_response frame (encode)");
                     return Ok(Some(EncodedFrame {
                         window_id: frame.window_id.clone(),
                         frame_id: response.frame_id,
@@ -359,7 +361,9 @@ impl VideoEncoderSession for VaSidecarSession {
                         String::from_utf8_lossy(&response.payload).into_owned(),
                     ));
                 }
-                Ok(_) => {}
+                Ok(response) => {
+                    tracing::debug!(target: "aqua::dmabuf", kind = response.kind, "video.sidecar_response other");
+                }
                 Err(TryRecvError::Empty) => return Ok(None),
                 Err(TryRecvError::Disconnected) => {
                     return Err(EncodeError::Backend("sidecar channel closed".into()));
@@ -376,9 +380,11 @@ impl VideoEncoderSession for VaSidecarSession {
         loop {
             match self.responses.try_recv() {
                 Ok(response) if response.kind == KIND_CONFIG => {
+                    tracing::debug!(target: "aqua::dmabuf", len = response.payload.len(), "video.sidecar_response config");
                     self.codec_config = Some(response.payload);
                 }
                 Ok(response) if response.kind == KIND_RESPONSE_FRAME => {
+                    tracing::debug!(target: "aqua::dmabuf", frame_id = response.frame_id, key = response.keyframe, len = response.payload.len(), "video.sidecar_response frame");
                     return Some(EncodedFrame {
                         window_id: self.window_id.clone(),
                         frame_id: response.frame_id,

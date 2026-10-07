@@ -459,6 +459,12 @@ impl AquaState {
             };
             if let Some(gpu) = gpu {
                 tracing::debug!(target: "aqua::dmabuf", window = %window, "video.reencode_latest");
+                // Some hardware encoders emit the codec-config packet separately
+                // from the first picture; a static window would otherwise produce
+                // only CONFIG. Feed the cached frame twice to flush the IDR.
+                if let Ok(extra) = gpu.try_clone() {
+                    self.publish_encoded_gpu(extra);
+                }
                 self.publish_encoded_gpu(gpu);
             }
         }
