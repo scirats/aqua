@@ -36,7 +36,12 @@ fn quinn_client_config(fingerprint: &str) -> quinn::ClientConfig {
 #[test]
 fn handshake_snapshot_and_command() {
     let (event_tx, event_rx) = std::sync::mpsc::channel();
-    let server = NetworkServer::spawn(config(0), event_tx, aqua_server::net::FrameHub::new())
+    let server = NetworkServer::spawn(
+        config(0),
+        event_tx,
+        aqua_server::net::FrameHub::new(),
+        aqua_server::net::VideoHub::new(),
+    )
         .expect("server");
     let addr = server.local_addr;
     let fingerprint = server.identity.fingerprint_sha256.clone();
@@ -167,7 +172,12 @@ fn handshake_snapshot_and_command() {
 #[test]
 fn version_mismatch_is_rejected() {
     let (event_tx, _event_rx) = std::sync::mpsc::channel();
-    let server = NetworkServer::spawn(config(0), event_tx, aqua_server::net::FrameHub::new())
+    let server = NetworkServer::spawn(
+        config(0),
+        event_tx,
+        aqua_server::net::FrameHub::new(),
+        aqua_server::net::VideoHub::new(),
+    )
         .expect("server");
     let addr = server.local_addr;
     let fingerprint = server.identity.fingerprint_sha256.clone();

@@ -34,7 +34,7 @@ use crate::{
     },
     events::{RemoteEventSink, TracingEventSink},
     gpu::{GpuBufferImporter, NullGpuImporter, NullVideoEncoder, VideoEncoder, VideoEncoderSession},
-    net::{FrameSink, ServerEvent},
+    net::{FrameSink, ServerEvent, VideoSink},
     protocol::{adapters, v1, ServerMessage},
 };
 
@@ -124,6 +124,7 @@ pub struct AquaState {
     revision: u64,
     network_clients: HashMap<u64, UnboundedSender<ServerMessage>>,
     pub(crate) frame_sink: Option<Arc<dyn FrameSink>>,
+    pub(crate) video_sink: Option<Arc<dyn VideoSink>>,
     frame_ids: HashMap<RemoteSurfaceId, u64>,
 
     // Phase 3C: GPU import + video encoding (neutral boundary).
@@ -193,6 +194,7 @@ impl AquaState {
             revision: 0,
             network_clients: HashMap::new(),
             frame_sink: None,
+            video_sink: None,
             frame_ids: HashMap::new(),
 
             dmabuf_state: DmabufState::new(),
@@ -206,6 +208,11 @@ impl AquaState {
     /// Install the data-plane frame sink (the QUIC frame hub).
     pub fn set_frame_sink(&mut self, sink: Arc<dyn FrameSink>) {
         self.frame_sink = Some(sink);
+    }
+
+    /// Install the window-video data-plane sink (the QUIC video hub).
+    pub fn set_video_sink(&mut self, sink: Arc<dyn VideoSink>) {
+        self.video_sink = Some(sink);
     }
 
     /// Install the GPU importer and video encoder.
@@ -469,6 +476,9 @@ impl AquaState {
                     })
                 }
                 RemoteEvent::WindowClosed { id } => {
+                    if let Some(sink) = &self.video_sink {
+                        sink.drop_window(&id.to_string());
+                    }
                     self.revision += 1;
                     ServerMessage::WindowClosed(v1::WindowClosed {
                         revision: self.revision,
@@ -590,7 +600,7 @@ impl AquaState {
 
     /// Ask the per-window video encoder for a keyframe (decoder reset, dropped
     /// GOP, resize, reconnection). No-op on the SHM-only path.
-    fn request_keyframe(&mut self, window_id: &str, reason: &str) {
+    pub(crate) fn request_keyframe(&mut self, window_id: &str, reason: &str) {
         let id = RemoteWindowId::new(window_id);
         if let Some(session) = self.video_sessions.get_mut(&id) {
             session.request_keyframe();

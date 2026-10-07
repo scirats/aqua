@@ -25,6 +25,7 @@ pub use super::tls::TlsIdentity;
 
 use super::frames::{dispatch_frames, FrameHub};
 use super::tls;
+use super::video::{dispatch_video, VideoHub};
 
 /// Sender of server -> client messages for one connected client.
 pub type Outgoing = UnboundedSender<ServerMessage>;
@@ -135,7 +136,12 @@ pub struct NetworkServer {
 }
 
 impl NetworkServer {
-    pub fn spawn<S>(config: NetworkConfig, events: S, frames: Arc<FrameHub>) -> Result<Self, String>
+    pub fn spawn<S>(
+        config: NetworkConfig,
+        events: S,
+        frames: Arc<FrameHub>,
+        video: Arc<VideoHub>,
+    ) -> Result<Self, String>
     where
         S: ServerEventSink + Clone,
     {
@@ -149,7 +155,7 @@ impl NetworkServer {
         let (addr_tx, addr_rx) = tokio::sync::oneshot::channel();
         let config_clone = config.clone();
         runtime.spawn(async move {
-            if let Err(error) = run(config_clone, events, frames, addr_tx).await {
+            if let Err(error) = run(config_clone, events, frames, video, addr_tx).await {
                 tracing::error!(error = %error, "QUIC server stopped");
             }
         });
@@ -168,6 +174,7 @@ async fn run<S>(
     config: NetworkConfig,
     events: S,
     frames: Arc<FrameHub>,
+    video: Arc<VideoHub>,
     ready: tokio::sync::oneshot::Sender<(SocketAddr, TlsIdentity)>,
 ) -> Result<(), String>
 where
@@ -188,8 +195,9 @@ where
         let events = events.clone();
         let next_client = next_client.clone();
         let frames = frames.clone();
+        let video = video.clone();
         tokio::spawn(async move {
-            if let Err(error) = handle_connection(incoming, events, next_client, frames).await {
+            if let Err(error) = handle_connection(incoming, events, next_client, frames, video).await {
                 tracing::debug!(error = %error, "connection ended with error");
             }
         });
@@ -202,6 +210,7 @@ async fn handle_connection<S>(
     events: S,
     next_client: Arc<std::sync::atomic::AtomicU64>,
     frames: Arc<FrameHub>,
+    video: Arc<VideoHub>,
 ) -> Result<(), String>
 where
     S: ServerEventSink + Clone,
@@ -210,6 +219,7 @@ where
     let client_id = next_client.fetch_add(1, Ordering::SeqCst);
     tracing::info!(client_id, remote = %connection.remote_address(), "connection.open");
     tokio::spawn(dispatch_frames(connection.clone(), frames));
+    tokio::spawn(dispatch_video(connection.clone(), video));
 
     let (out_tx, out_rx) = unbounded_channel::<ServerMessage>();
     let out_rx = Arc::new(Mutex::new(Some(out_rx)));

@@ -7,6 +7,8 @@
 pub mod frames;
 pub mod server;
 pub mod tls;
+pub mod video;
 
 pub use frames::{FrameHub, FrameSink};
 pub use server::{ClientCommand, NetworkConfig, NetworkServer, Outgoing, ServerEvent, TlsIdentity};
+pub use video::{VideoConfig, VideoHub, VideoSink};
