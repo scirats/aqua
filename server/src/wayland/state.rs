@@ -139,6 +139,9 @@ pub struct AquaState {
     pub dmabuf_global: Option<DmabufGlobal>,
     pub gpu_importer: Arc<dyn GpuBufferImporter>,
     pub video_encoder: Arc<dyn VideoEncoder>,
+    /// Optional dmabuf-capable encoder (e.g. the VA sidecar). SHM frames keep
+    /// using `video_encoder`; dmabuf frames use this one.
+    pub dmabuf_encoder: Option<Arc<dyn VideoEncoder>>,
     pub video_sessions: HashMap<RemoteWindowId, Box<dyn VideoEncoderSession>>,
 }
 
@@ -208,6 +211,7 @@ impl AquaState {
             dmabuf_global: None,
             gpu_importer: Arc::new(NullGpuImporter),
             video_encoder: Arc::new(NullVideoEncoder),
+            dmabuf_encoder: None,
             video_sessions: HashMap::new(),
         }
     }
@@ -307,7 +311,14 @@ impl AquaState {
 
     /// Whether the installed encoder can consume dmabuf frames (GPU path).
     pub(crate) fn video_supports_dmabuf(&self) -> bool {
-        self.video_encoder.supports_dmabuf()
+        self.dmabuf_encoder.is_some()
+    }
+
+    /// Install a dmabuf-capable encoder alongside the SHM one, so SHM clients
+    /// (e.g. a pixman terminal) and dmabuf clients can both produce video.
+    pub fn install_dmabuf_encoder(&mut self, encoder: Arc<dyn VideoEncoder>) {
+        tracing::info!(encoder = encoder.name(), "video: dmabuf encoder installed");
+        self.dmabuf_encoder = Some(encoder);
     }
 
     /// Encode one committed SHM frame for its window and publish it to the video
@@ -393,7 +404,19 @@ impl AquaState {
             return;
         };
         let window_id = RemoteWindowId::new(&gpu.window_id);
-        let encoder = self.video_encoder.clone();
+        // Pick the encoder by frame source: SHM frames go to the SHM encoder
+        // (ffmpeg), dmabuf frames to the dmabuf encoder (VA sidecar).
+        let encoder = if matches!(gpu.source, FrameSource::Dmabuf) {
+            match self.dmabuf_encoder.clone() {
+                Some(encoder) => encoder,
+                None => {
+                    tracing::warn!(window = %gpu.window_id, "video: dmabuf frame but no dmabuf encoder");
+                    return;
+                }
+            }
+        } else {
+            self.video_encoder.clone()
+        };
         let config = VideoEncoderConfig {
             codec: VideoCodec::Hevc,
             chroma: VideoChroma::Nv12,

@@ -37,6 +37,12 @@ impl CompositorHandler for AquaState {
         // which consumes (`take`s) `SurfaceAttributes.buffer`. SHM is copied;
         // dmabuf is only inspected (never CPU-mapped) on the normal path.
         let captured = capture_surface_buffer(surface);
+        // We have copied the SHM pixels, so release the buffer for reuse. Without
+        // this, an SHM client with a small buffer pool (foot) stalls after a few
+        // frames because the compositor never sends `wl_buffer.release`.
+        if captured.is_some() {
+            release_committed_buffer(surface);
+        }
         let dmabuf = capture_dmabuf_info(surface);
         // The dmabuf buffer is consumed too, so build the neutral frame now —
         // but only when a dmabuf-aware encoder actually wants video (avoid
@@ -314,6 +320,16 @@ fn capture_dmabuf_frame(surface: &WlSurface) -> Option<GpuFrame> {
         let dmabuf = smithay::wayland::dmabuf::get_dmabuf(buffer).ok()?;
         crate::wayland::dmabuf::gpu_frame_from_dmabuf(dmabuf).ok()
     })
+}
+
+/// Send `wl_buffer.release` for the buffer just committed on `surface`.
+fn release_committed_buffer(surface: &WlSurface) {
+    with_states(surface, |states| {
+        let mut cached = states.cached_state.get::<SurfaceAttributes>();
+        if let Some(BufferAssignment::NewBuffer(buffer)) = cached.current().buffer.as_ref() {
+            buffer.release();
+        }
+    });
 }
 
 fn capture_dmabuf_info(surface: &WlSurface) -> Option<DmabufInfo> {    with_states(surface, |states| {
