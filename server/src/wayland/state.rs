@@ -682,7 +682,7 @@ impl AquaState {
                 // Presentation feedback. Records the round trip for metrics and,
                 // in a later step, will drive `wl_surface.frame` callbacks.
                 tracing::debug!(
-                    target: "aqua::frame",
+                    target: "aqua::present",
                     surface_id = %surface_id,
                     frame_id,
                     presentation_time_us,
