@@ -388,6 +388,13 @@ impl VideoEncoderSession for VaSidecarSession {
                         data: response.payload,
                     });
                 }
+                Ok(response) if response.kind == KIND_ERROR => {
+                    tracing::warn!(
+                        window = %self.window_id,
+                        error = %String::from_utf8_lossy(&response.payload),
+                        "video.sidecar_error"
+                    );
+                }
                 Ok(_) => {}
                 Err(_) => return None,
             }

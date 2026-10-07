@@ -423,6 +423,7 @@ impl AquaState {
                 };
                 match frame {
                     Some(encoded) => {
+                        tracing::debug!(target: "aqua::dmabuf", window = %window, "video.publish_pump");
                         if let Some((codec, chroma, width, height, Some(codec_config))) = config {
                             sink.submit_config(
                                 &window.to_string(),
@@ -540,7 +541,22 @@ impl AquaState {
                 }
                 sink.submit_frame(encoded);
             }
-            Ok(None) => {}
+            Ok(None) => {
+                // The AU is not ready yet, but codec parameter sets may already be:
+                // submit them now so the stream is created and NOT lost.
+                if let Some(codec_config) = codec_config {
+                    sink.submit_config(
+                        &gpu.window_id,
+                        VideoConfig {
+                            codec: VideoCodec::Hevc,
+                            chroma: VideoChroma::Nv12,
+                            width: gpu.width,
+                            height: gpu.height,
+                            codec_config: codec_config.to_vec(),
+                        },
+                    );
+                }
+            }
             Err(error) => {
                 tracing::warn!(window = %gpu.window_id, %error, "video.encode_failed");
                 self.video_sessions.remove(&window_id);
