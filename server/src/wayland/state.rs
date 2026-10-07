@@ -128,6 +128,9 @@ pub struct AquaState {
     pub capabilities: u32,
     revision: u64,
     network_clients: HashMap<u64, UnboundedSender<ServerMessage>>,
+    /// Per connected client: whether it negotiated `SURFACE_VIDEO` in the
+    /// handshake. Video is only produced while at least one client wants it.
+    video_clients: HashMap<u64, bool>,
     pub(crate) frame_sink: Option<Arc<dyn FrameSink>>,
     pub(crate) video_sink: Option<Arc<dyn VideoSink>>,
     frame_ids: HashMap<RemoteSurfaceId, u64>,
@@ -198,6 +201,7 @@ impl AquaState {
             capabilities: crate::protocol::capability::advertised(false),
             revision: 0,
             network_clients: HashMap::new(),
+            video_clients: HashMap::new(),
             frame_sink: None,
             video_sink: None,
             frame_ids: HashMap::new(),
@@ -271,11 +275,30 @@ impl AquaState {
         !self.video_encoder.supported_codecs().is_empty()
     }
 
+    /// Whether any connected client negotiated `SURFACE_VIDEO`. Video is only
+    /// produced while someone consumes it (a cheap, non-design guard).
+    pub(crate) fn has_video_consumer(&self) -> bool {
+        self.video_clients.values().any(|wants| *wants)
+    }
+
     /// Encode one committed SHM frame for its window and publish it to the video
     /// plane. Root toplevel only for this milestone (subsurfaces/popups later).
     pub(crate) fn encode_video_frame(&mut self, frame: &SurfaceFrame) {
         if frame.width < crate::gpu::MIN_WIDTH || frame.height < crate::gpu::MIN_HEIGHT {
             return; // below the VCN minimum; padded composition is a later step
+        }
+        // Cheap guard (not the hybrid decision): only produce video while at
+        // least one client wants it and the window is mapped.
+        if !self.has_video_consumer() {
+            return;
+        }
+        if !self
+            .registry
+            .window(&RemoteWindowId::new(&frame.window_id))
+            .map(|window| window.mapped)
+            .unwrap_or(false)
+        {
+            return;
         }
         let Some(sink) = self.video_sink.clone() else {
             return;
@@ -452,6 +475,7 @@ impl AquaState {
             ServerEvent::ClientConnected {
                 client_id,
                 client_session_id,
+                client_capabilities,
                 outgoing,
             } => {
                 tracing::info!(
@@ -496,10 +520,15 @@ impl AquaState {
                     surfaces: surface_infos,
                 }));
                 tracing::info!(client_id, revision = self.revision, "snapshot.sent");
+                self.video_clients.insert(
+                    client_id,
+                    client_capabilities & crate::protocol::capability::SURFACE_VIDEO != 0,
+                );
                 self.network_clients.insert(client_id, outgoing);
             }
             ServerEvent::ClientDisconnected { client_id } => {
                 self.network_clients.remove(&client_id);
+                self.video_clients.remove(&client_id);
                 tracing::info!(client_id, "connection.removed");
             }
             ServerEvent::Command { client_id, command } => {

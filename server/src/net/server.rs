@@ -109,6 +109,8 @@ pub enum ServerEvent {
     ClientConnected {
         client_id: u64,
         client_session_id: String,
+        /// Capability bits the client advertised in `ClientHello`.
+        client_capabilities: u32,
         outgoing: Outgoing,
     },
     ClientDisconnected {
@@ -314,6 +316,7 @@ async fn serve_stream<S>(
                 events.send_event(ServerEvent::ClientConnected {
                     client_id,
                     client_session_id: hello.client_session_id,
+                    client_capabilities: hello.capabilities.map(|c| c.bits).unwrap_or(0),
                     outgoing: out_tx.clone(),
                 });
                 let pump_stream = send.take();

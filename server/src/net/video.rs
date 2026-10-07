@@ -1,5 +1,11 @@
 //! Window video data-plane hub (phase 3C).
 //!
+//! **HYPOTHESIS (Milestone 5, to validate):** the granularity here is *one
+//! encoded stream per `RemoteWindow`* (Model B). This is **not** a settled
+//! decision: `docs/VIDEO.md` leaves per-surface vs per-window open, and the SHM
+//! plane still streams one stream per `RemoteSurface`. Do not treat
+//! "1 `RemoteWindow` = 1 encoder" as final until measured against alternatives.
+//!
 //! Mirror of [`super::frames::FrameHub`] for the **encoded** video plane, but
 //! with the two differences inter-frame codecs force:
 //!
