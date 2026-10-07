@@ -191,6 +191,14 @@ impl VideoSink for VideoHub {
         let (state, notify, _created) = self.entry_or_create(window_id);
         {
             let mut state = state.lock().unwrap();
+            // A config change (resize / codec change) invalidates every in-flight
+            // frame: they were encoded for the *old* format description, so sending
+            // them after the new CONFIG would mismatch the decoder. Drop them and
+            // demand a fresh keyframe at the new size.
+            if state.config.as_ref().is_some_and(|previous| previous != &config) {
+                state.queue.clear();
+                state.keyframe_needed = true;
+            }
             state.config = Some(config);
             state.config_pending = true;
         }
@@ -383,6 +391,25 @@ mod tests {
         let state = state.lock().unwrap();
         assert!(state.config_pending);
         assert_eq!(state.config.as_ref().unwrap().width, 800);
+    }
+
+    #[test]
+    fn config_change_drops_in_flight_frames_and_requests_keyframe() {
+        let hub = VideoHub::with_capacity(8);
+        hub.submit_config("window-1", config(800));
+        hub.submit_frame(frame(1, true));
+        hub.submit_frame(frame(2, false));
+
+        // Resize invalidates everything encoded for the old format description.
+        hub.submit_config("window-1", config(1024));
+
+        let entry = hub.streams.lock().unwrap().get("window-1").unwrap().state.clone();
+        {
+            let state = entry.lock().unwrap();
+            assert!(state.queue.is_empty(), "old-size frames invalidated");
+            assert_eq!(state.config.as_ref().unwrap().width, 1024);
+        }
+        assert_eq!(hub.take_keyframe_requests(), vec!["window-1".to_string()]);
     }
 
     #[test]
