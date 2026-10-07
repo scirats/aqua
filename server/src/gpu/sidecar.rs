@@ -14,7 +14,7 @@
 //!
 //! ```text
 //! u32 magic=0x4156_4131 | u8 kind(1=FRAME,2=FLUSH,3=SHUTDOWN) | u8 codec(1=h264,2=hevc)
-//! u16 rsv | u32 width | u32 height | u64 frame_id | u64 pts_us
+//! u16 rsv | u32 fourcc | u32 width | u32 height | u64 frame_id | u64 pts_us
 //! u8 keyframe | u8 num_planes | u16 rsv2
 //! [u32 offset, u32 stride, u64 modifier] * num_planes
 //! ```
@@ -59,7 +59,7 @@ pub const KIND_ERROR: u8 = 12;
 #[allow(dead_code)] // part of the documented protocol
 pub const KIND_FLUSHED: u8 = 13;
 
-const REQ_HEADER_LEN: usize = 36;
+const REQ_HEADER_LEN: usize = 40;
 const RESP_HEADER_LEN: usize = 32;
 
 /// Encode a request header plus one descriptor per plane (16 bytes each).
@@ -67,6 +67,7 @@ const RESP_HEADER_LEN: usize = 32;
 pub fn encode_request(
     kind: u8,
     codec: u8,
+    fourcc: u32,
     width: u32,
     height: u32,
     frame_id: u64,
@@ -79,6 +80,7 @@ pub fn encode_request(
     out.push(kind);
     out.push(codec);
     out.extend_from_slice(&0u16.to_le_bytes());
+    out.extend_from_slice(&fourcc.to_le_bytes());
     out.extend_from_slice(&width.to_le_bytes());
     out.extend_from_slice(&height.to_le_bytes());
     out.extend_from_slice(&frame_id.to_le_bytes());
@@ -285,6 +287,7 @@ impl VaSidecarSession {
         let request = encode_request(
             kind,
             self.config.codec.to_wire() as u8,
+            0,
             self.config.width,
             self.config.height,
             self.frame_id,
@@ -319,6 +322,7 @@ impl VideoEncoderSession for VaSidecarSession {
         let request = encode_request(
             KIND_FRAME,
             self.config.codec.to_wire() as u8,
+            frame.format.fourcc,
             frame.width,
             frame.height,
             self.frame_id,
@@ -454,6 +458,7 @@ mod tests {
         let bytes = encode_request(
             KIND_FRAME,
             VideoCodec::Hevc.to_wire() as u8,
+            0x3432_5241, // AR24
             800,
             600,
             42,
@@ -464,10 +469,14 @@ mod tests {
         assert_eq!(u32::from_le_bytes(bytes[0..4].try_into().unwrap()), MAGIC);
         assert_eq!(bytes[4], KIND_FRAME);
         assert_eq!(bytes[5], 2);
-        assert_eq!(u32::from_le_bytes(bytes[8..12].try_into().unwrap()), 800);
-        assert_eq!(u64::from_le_bytes(bytes[16..24].try_into().unwrap()), 42);
-        assert_eq!(bytes[32], 1); // keyframe
-        assert_eq!(bytes[33], 2); // two planes
+        assert_eq!(
+            u32::from_le_bytes(bytes[8..12].try_into().unwrap()),
+            0x3432_5241
+        );
+        assert_eq!(u32::from_le_bytes(bytes[12..16].try_into().unwrap()), 800);
+        assert_eq!(u64::from_le_bytes(bytes[20..28].try_into().unwrap()), 42);
+        assert_eq!(bytes[36], 1); // keyframe
+        assert_eq!(bytes[37], 2); // two planes
         assert_eq!(bytes.len(), REQ_HEADER_LEN + 32);
     }
 
