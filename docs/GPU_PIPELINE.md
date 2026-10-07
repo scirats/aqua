@@ -36,6 +36,30 @@
   from dmabuf is Milestone 2). The current encoder path is
   **SHM →(CPU BGRA)→ ffmpeg → VA-API** (an upload, not a readback).
 
+### M2/M3 achieved (dmabuf → sidecar → iPad, 0 CPU copies)
+
+The GPU-native path is now **VERIFIED** on the physical iPad:
+
+```
+weston-simple-egl (xdg_toplevel, linux-dmabuf AR24 LINEAR, 1 plane)
+  → Aqua: SCM_RIGHTS to the `aqua-va-encode` sidecar
+      → DRM_PRIME_2 import → VPP ARGB→NV12 (GPU) → hevc_vaapi (libav, same VADisplay)
+  → Annex-B CONFIG(VPS/SPS/PPS) + FRAME(access unit, keyframe flag)
+  → VideoHub → QUIC → VideoToolbox on the iPad → UIWindowScene
+```
+
+- `zwp_linux_dmabuf_v1` advertises only **LINEAR** modifiers so GPU clients
+  allocate importable buffers (the AMD tiling+DCC modifiers are unproven for
+  VA import).
+- Pixel copies on the CPU: **0** (plane fds travel via `SCM_RIGHTS`; import, VPP
+  and encode run on the GPU). The only CPU-copy path that remains is the legacy
+  SHM fallback (upload).
+- The sidecar protocol lives in `server/src/gpu/sidecar.rs`.
+- Client for text clarity: the Ubuntu `foot` package is built **without EGL**
+  (pixman/`wl_shm` only), so it exercises the SHM path, not dmabuf; a GPU text
+  client (EGL) or Firefox is still pending (Milestone 4).
+
+
 ---
 
 This document is the **mandatory investigation** that precedes any encoder work.
