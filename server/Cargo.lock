@@ -37,6 +37,7 @@ name = "aqua-server"
 version = "0.1.0"
 dependencies = [
  "bytes",
+ "libc",
  "prost",
  "prost-build",
  "quinn",

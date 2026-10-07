@@ -83,29 +83,38 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         network.identity.fingerprint_sha256.clone(),
     );
 
-    // Phase 3C GPU/video switch. The default build has no GPU
-    // (`docs/GPU_PIPELINE.md`), so the null importer/encoder keep Aqua on the
-    // SHM-only path: no `zwp_linux_dmabuf_v1` global, no `SURFACE_VIDEO`.
-    // On this machine we have a real AMD VA-API encoder (ffmpeg backend); when
-    // present, video is advertised while dmabuf stays off (importer is null) —
-    // the SHM -> encoder -> VideoHub path.
-    let encoder: std::sync::Arc<dyn gpu::VideoEncoder> = {
-        let vaapi = gpu::FfmpegVaapiEncoder::from_env();
-        if vaapi.is_available() {
+    // Phase 3C GPU/video switch, selected by `AQUA_DMABUF`:
+    //   - unset     : SHM-only (null importer + ffmpeg-vaapi from SHM).
+    //   - observe   : advertise LINEAR dmabuf formats (diagnostic; no real import).
+    //   - vaapi     : advertise LINEAR dmabuf + the `aqua-va-encode` sidecar
+    //                 (real DRM_PRIME_2 import -> VPP -> libav encode, 0 CPU copies).
+    let dmabuf_mode = std::env::var("AQUA_DMABUF").unwrap_or_default();
+    let importer: std::sync::Arc<dyn gpu::GpuBufferImporter> =
+        if dmabuf_mode == "observe" || dmabuf_mode == "vaapi" {
+            tracing::info!(mode = %dmabuf_mode, "dmabuf: advertising LINEAR formats");
+            std::sync::Arc::new(gpu::ObserveGpuImporter::new())
+        } else {
+            std::sync::Arc::new(gpu::NullGpuImporter)
+        };
+    let encoder: std::sync::Arc<dyn gpu::VideoEncoder> = if dmabuf_mode == "vaapi" {
+        let sidecar = gpu::VaSidecarEncoder::from_env();
+        if sidecar.is_available() {
+            tracing::info!("video: aqua-va-encode sidecar available (dmabuf, 0-copy)");
+            std::sync::Arc::new(sidecar)
+        } else {
+            tracing::warn!("AQUA_DMABUF=vaapi but sidecar binary missing; SHM-only");
+            std::sync::Arc::new(gpu::NullVideoEncoder)
+        }
+    } else {
+        let ffmpeg = gpu::FfmpegVaapiEncoder::from_env();
+        if ffmpeg.is_available() {
             tracing::info!(codec = "hevc/h264", "video: ffmpeg-vaapi encoder available");
-            std::sync::Arc::new(vaapi)
+            std::sync::Arc::new(ffmpeg)
         } else {
             tracing::info!("video: no VA-API encoder; staying SHM-only");
             std::sync::Arc::new(gpu::NullVideoEncoder)
         }
     };
-    let importer: std::sync::Arc<dyn gpu::GpuBufferImporter> =
-        if std::env::var("AQUA_DMABUF").as_deref() == Ok("observe") {
-            tracing::info!("dmabuf: observe importer (advertises real EGL formats)");
-            std::sync::Arc::new(gpu::ObserveGpuImporter::new())
-        } else {
-            std::sync::Arc::new(gpu::NullGpuImporter)
-        };
     data.state.install_gpu(importer, encoder);
     event_loop
         .handle()

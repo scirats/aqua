@@ -49,6 +49,7 @@ tokio = { version = "1", features = [
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 rustls-pemfile = "2"
 sha2 = "0.10"
+libc = "0.2"
 
 [build-dependencies]
 prost-build = "0.14"
