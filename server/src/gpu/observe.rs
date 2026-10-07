@@ -91,6 +91,16 @@ impl GpuBufferImporter for ObserveGpuImporter {
             planes = frame.plane_count(),
             "dmabuf.observed (metadata-only; real EGL/VA import is Milestone 2)"
         );
+        for (index, plane) in frame.planes.iter().enumerate() {
+            tracing::info!(
+                target: "aqua::dmabuf",
+                plane = index,
+                offset = plane.offset,
+                stride = plane.stride,
+                modifier = format_args!("{:#018x}", plane.modifier),
+                "dmabuf.plane"
+            );
+        }
         Ok(frame)
     }
 }

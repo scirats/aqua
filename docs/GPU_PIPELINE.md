@@ -1,5 +1,43 @@
 # Aqua — GPU pipeline investigation (Fase 3C.0)
 
+> **Update — real hardware (native Linux + AMD).** The environment described in
+> §1 below (macOS + Colima, **no** GPU) was the original one. The server now runs
+> on **native Linux with a real AMD GPU**, so those "no GPU / NOT AVAILABLE"
+> conclusions no longer apply. The measured facts of the new environment are in
+> §0. The rest of this document is kept as the original investigation.
+
+## 0. Measured on the real target (native Linux + AMD)
+
+- Ubuntu 26.04 x86_64, AMD Ryzen 7 PRO 5850U; GPU AMD Radeon (Renoir), driver
+  `amdgpu`, node `/dev/dri/renderD128`; Mesa 26.0.8, libva 1.23.
+- **VA-API** (`vainfo`, renderD128): encode **H.264** ConstrainedBaseline/Main/High
+  and **HEVC Main/Main10** (`VAEntrypointEncSlice`); decode H.264/HEVC Main/Main10/VP9.
+- **Encoder real**: `ffmpeg 8.0.1` + `hevc_vaapi`/`h264_vaapi`,
+  `-rc_mode CBR -b:v 12M -g 120 -bf 0`, Annex-B with AUD. **VERIFIED**: HEVC
+  decoded on a physical iPad.
+- **dmabuf / EGL**: `EGL 1.5 Mesa`; `EGL_EXT_image_dma_buf_import` and
+  `..._modifiers` = yes; **67 importable formats**.
+  - Relevant: **AR24/XR24/AB24/XB24** (RGBA/BGRA 8-bit) with 10 modifiers each;
+    **NV12/P010** with 6 modifiers each.
+  - AMD modifier e.g. `0x020000044051ba01` decodes (via `drm_fourcc.h` macros) to
+    vendor AMD(`0x02`), TILE_VERSION=1 (GFX9), TILE=26
+    (`AMD_FMT_MOD_TILE_GFX9_64K_D_X`), **DCC=1**, DCC_INDEPENDENT_64B=1,
+    PIPE_XOR_BITS=2, PIPE=2; plus `LINEAR`(0).
+- **Observed real GPU client** (`weston-simple-egl`, `xdg_toplevel`): dmabuf
+  **AR24**, modifier `0x020000044051ba01`, **2 planes**:
+  - plane 0: `offset=0`, `stride=1024` (250 px → 1000 B, padded to 256 B);
+  - plane 1 (DCC metadata): `offset=262144` (=256 KiB colour, 1024×256), `stride=512`.
+  - Sync: **implicit** (`wl_surface.attach`+`commit`, no explicit fences) →
+    `SyncState::Unknown`.
+- Requirement for Mesa to use dmabuf: the `zwp_linux_dmabuf_v1` default feedback
+  must carry the **real `main_device`** (render node `dev_t`). Without it Mesa
+  fails with `fd -1`.
+- **Copy count**: `NOT MEASURED` yet (the real EGLImage→VA import and the encode
+  from dmabuf is Milestone 2). The current encoder path is
+  **SHM →(CPU BGRA)→ ffmpeg → VA-API** (an upload, not a readback).
+
+---
+
 This document is the **mandatory investigation** that precedes any encoder work.
 Its rule is simple: **everything here is either measured on real hardware or
 explicitly marked `NOT MEASURED` / `NOT AVAILABLE`.** No invented RTT, CPU, GPU,
