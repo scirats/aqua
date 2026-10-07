@@ -166,4 +166,17 @@ mod tests {
         let importer = FakeImporter { formats: vec![] };
         assert!(smithay_formats(&importer).is_empty());
     }
+
+    #[test]
+    fn amd_tiling_modifier_is_preserved() {
+        // AR24 with the real AMD GFX9+DCC modifier observed from weston-simple-egl.
+        let modifier = 0x0200_0004_4051_ba01;
+        let importer = FakeImporter {
+            formats: vec![DmabufFormat::new(0x3432_5241, modifier)],
+        };
+        let formats = smithay_formats(&importer);
+        assert_eq!(formats.len(), 1);
+        assert_eq!(formats[0].code, Fourcc::Argb8888);
+        assert_eq!(u64::from(formats[0].modifier), modifier);
+    }
 }

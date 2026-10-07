@@ -10,7 +10,7 @@ use smithay::{
     output::Output,
     reexports::{
         calloop::{
-            channel::Sender, generic::Generic, EventLoop, Interest, LoopSignal, Mode, PostAction,
+            channel::Sender, generic::Generic, EventLoop, Interest, Mode, PostAction,
         },
         wayland_server::{
             backend::{ClientData, ClientId, DisconnectReason, ObjectId},
@@ -50,8 +50,6 @@ use super::output::create_virtual_output;
 /// Messages delivered to the event loop from outside the Wayland dispatch.
 #[derive(Debug)]
 pub enum ControlMessage {
-    /// A line typed on stdin (demo control channel).
-    Command(String),
     /// A Wayland client disconnected.
     ClientDisconnected(ClientId),
 }
@@ -95,7 +93,6 @@ pub struct CalloopData {
 pub struct AquaState {
     pub start_time: Instant,
     pub display_handle: DisplayHandle,
-    pub loop_signal: LoopSignal,
 
     // Smithay state
     pub compositor_state: CompositorState,
@@ -146,7 +143,7 @@ pub struct AquaState {
 }
 
 impl AquaState {
-    pub fn new(event_loop: &mut EventLoop<CalloopData>, display_handle: &DisplayHandle) -> Self {
+    pub fn new(_event_loop: &mut EventLoop<CalloopData>, display_handle: &DisplayHandle) -> Self {
         let compositor_state = CompositorState::new::<Self>(display_handle);
         let xdg_shell_state = XdgShellState::new::<Self>(display_handle);
         let shm_state = ShmState::new::<Self>(
@@ -162,7 +159,7 @@ impl AquaState {
         let mut seat_state = SeatState::new();
         let mut seat = seat_state.new_wl_seat(display_handle, "aqua");
         // Keyboard + pointer are always present. Real devices arrive later from
-        // the iPad through the mock input source.
+        // the iPad through the synthetic input path.
         let _ = seat.add_keyboard(Default::default(), 200, 25);
         seat.add_pointer();
 
@@ -172,7 +169,6 @@ impl AquaState {
         Self {
             start_time: Instant::now(),
             display_handle: display_handle.clone(),
-            loop_signal: event_loop.get_signal(),
 
             compositor_state,
             xdg_shell_state,

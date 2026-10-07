@@ -27,7 +27,7 @@ impl SeatHandler for AquaState {
 
     fn cursor_image(&mut self, _seat: &Seat<Self>, _image: CursorImageStatus) {
         // `wl_pointer.set_cursor` surfaces arrive here. They are NOT windows and
-        // are not transmitted in phase 2. See PHASE2.md for the RemoteCursor plan.
+        // are not transmitted in phase 2. See `docs/PHASE2-server.md` for the RemoteCursor plan.
     }
 
     fn focus_changed(&mut self, seat: &Seat<Self>, focused: Option<&WlSurface>) {

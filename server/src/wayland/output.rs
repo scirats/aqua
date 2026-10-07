@@ -6,7 +6,7 @@ use smithay::{
 
 use super::state::AquaState;
 
-/// Default virtual output size. Not final; see PHASE2.md.
+/// Default virtual output size. Not final; see `docs/PHASE2-server.md`.
 pub const VIRTUAL_WIDTH: i32 = 1920;
 pub const VIRTUAL_HEIGHT: i32 = 1080;
 pub const VIRTUAL_REFRESH_MHZ: i32 = 60_000;

@@ -151,25 +151,6 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         })
         .expect("failed to insert the control channel source");
 
-    // --- stdin reader (demo control) -----------------------------------------
-    {
-        let tx = control_tx.clone();
-        std::thread::spawn(move || {
-            use std::io::BufRead;
-            let stdin = std::io::stdin();
-            for line in stdin.lock().lines() {
-                match line {
-                    Ok(line) => {
-                        if tx.send(ControlMessage::Command(line)).is_err() {
-                            break;
-                        }
-                    }
-                    Err(_) => break,
-                }
-            }
-        });
-    }
-
     // --- Frame clock ---------------------------------------------------------
     let frame_interval = Duration::from_millis(16);
     let timer = Timer::from_duration(frame_interval);
@@ -232,13 +213,4 @@ fn print_banner(socket_name: &str, network: &NetworkServer, session_id: &str) {
     println!();
     println!("Run a client with:");
     println!("    WAYLAND_DISPLAY={socket_name} <wayland-client>");
-    println!();
-    println!("Control channel (stdin):");
-    println!("    list");
-    println!("    resize <window-id> <width> <height>");
-    println!("    focus <window-id>");
-    println!("    pointer move <x> <y>");
-    println!("    pointer button <left|right|middle> <down|up>");
-    println!("    key <char> <down|up>");
-    println!("    quit");
 }

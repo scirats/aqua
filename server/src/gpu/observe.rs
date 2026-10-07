@@ -118,4 +118,17 @@ mod tests {
         assert!(formats.contains(&DmabufFormat::new(XR24, 0x20000044051ba01)));
         assert!(formats.contains(&DmabufFormat::new(NV12, 0)));
     }
+
+    #[test]
+    fn advertises_nv12_p010_with_amd_tiling_modifier() {
+        let importer = ObserveGpuImporter::new();
+        let formats = importer.supported_formats();
+        assert!(formats.contains(&DmabufFormat::new(NV12, 0x200000000401a01)));
+        assert!(formats.contains(&DmabufFormat::new(P010, 0x200000000000901)));
+    }
+
+    #[test]
+    fn is_named_as_an_observation_importer() {
+        assert_eq!(ObserveGpuImporter::new().name(), "egl-observe");
+    }
 }

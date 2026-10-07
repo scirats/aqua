@@ -1,5 +1,10 @@
 # Fase 2 — Aqua Server (Linux / Wayland / Smithay)
 
+> **Archived.** Historical phase-2 notes. The **stdin control channel** and
+> `scripts/demo.sh` were removed during the cleanup (they were phase-2 demo
+> scaffolding); the real input path is now the synthetic input from the iPad.
+> References to `scripts/demo.sh` below are kept only as history.
+
 Servidor/compositor Wayland headless que se comporta como servidor Wayland real
 para aplicaciones, y traduce cada `xdg_toplevel` a un `RemoteWindow` neutro.
 No hay red, ni QUIC, ni vídeo, ni iPad todavía.

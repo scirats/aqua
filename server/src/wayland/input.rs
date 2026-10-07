@@ -11,57 +11,21 @@ use smithay::{
     utils::{Point, SERIAL_COUNTER},
 };
 
-use crate::{
-    control::{ControlCommand, PointerButton},
-    domain::{RemoteViewport, RemoteWindowId},
-};
+use crate::domain::{RemoteViewport, RemoteWindowId};
 
 use super::state::{AquaState, ControlMessage};
 
 impl AquaState {
-    // MARK: - Control channel
-
+    /// Handle a control message delivered by the Wayland client adapter.
     pub fn handle_control(&mut self, message: ControlMessage) {
         match message {
-            ControlMessage::Command(line) => {
-                let command = crate::control::parse(&line);
-                self.apply_control(command);
-            }
             ControlMessage::ClientDisconnected(client_id) => {
                 self.handle_client_disconnected(client_id);
             }
         }
     }
 
-    fn apply_control(&mut self, command: ControlCommand) {
-        match command {
-            ControlCommand::Empty => {}
-            ControlCommand::Unknown(line) => {
-                tracing::warn!(command = %line, "unknown control command");
-            }
-            ControlCommand::List => self.log_state(),
-            ControlCommand::Quit => {
-                tracing::info!("stop requested on control channel");
-                self.loop_signal.stop();
-            }
-            ControlCommand::Resize {
-                window,
-                width,
-                height,
-            } => {
-                self.resize_window(&window, width, height);
-            }
-            ControlCommand::Focus { window } => self.focus_window(&window),
-            ControlCommand::PointerMove { x, y } => self.pointer_move(x, y),
-            ControlCommand::PointerButton { button, pressed } => {
-                self.pointer_button(button, pressed);
-            }
-            ControlCommand::Scroll { dx, dy } => self.scroll(dx, dy),
-            ControlCommand::Key { key, pressed } => self.key(&key, pressed),
-        }
-    }
-
-    // MARK: - Viewport (resize demo)
+    // MARK: - Viewport
 
     /// `resize <window> <w> <h>` -> `RemoteViewportChanged` -> xdg configure.
     pub fn resize_window(&mut self, window: &str, width: i32, height: i32) {
@@ -97,7 +61,7 @@ impl AquaState {
         );
     }
 
-    // MARK: - Input demo
+    // MARK: - Input
 
     pub fn focus_window(&mut self, window: &str) {
         let id = RemoteWindowId::new(window);
@@ -143,29 +107,6 @@ impl AquaState {
         tracing::info!(target: "aqua::input", window = %window, x, y, "pointer.motion");
     }
 
-    fn pointer_button(&mut self, button: PointerButton, pressed: bool) {
-        let Some(pointer) = self.seat.get_pointer() else {
-            return;
-        };
-        let serial = SERIAL_COUNTER.next_serial();
-        let state = if pressed {
-            ButtonState::Pressed
-        } else {
-            ButtonState::Released
-        };
-        pointer.button(
-            self,
-            &ButtonEvent {
-                serial,
-                time: 0,
-                button: button.button_code(),
-                state,
-            },
-        );
-        pointer.frame(self);
-        tracing::info!(target: "aqua::input", button = ?button, pressed, "pointer.button");
-    }
-
     fn scroll(&mut self, dx: f64, dy: f64) {
         let Some(pointer) = self.seat.get_pointer() else {
             return;
@@ -180,32 +121,6 @@ impl AquaState {
         pointer.axis(self, frame);
         pointer.frame(self);
         tracing::info!(target: "aqua::input", dx, dy, "pointer.axis");
-    }
-
-    fn key(&mut self, key: &str, pressed: bool) {
-        let Some(evdev) = crate::control::resolve_keycode(key) else {
-            tracing::warn!(key = %key, "unrecognized key");
-            return;
-        };
-        let Some(keyboard) = self.seat.get_keyboard() else {
-            return;
-        };
-        let serial = SERIAL_COUNTER.next_serial();
-        let state = if pressed {
-            KeyState::Pressed
-        } else {
-            KeyState::Released
-        };
-        // xkb keycodes are evdev codes offset by 8.
-        keyboard.input(
-            self,
-            Keycode::new(evdev + 8),
-            state,
-            serial,
-            0,
-            |_, _, _| FilterResult::<()>::Forward,
-        );
-        tracing::info!(target: "aqua::input", key = %key, evdev, pressed, "keyboard.input");
     }
 
     // MARK: - Remote input (from the iPad, over Aqua Protocol)
@@ -315,26 +230,6 @@ impl AquaState {
             send_frames_surface_tree(&surface, &output, time, Some(Duration::ZERO), |_, _| {
                 Some(output.clone())
             });
-        }
-    }
-
-    fn log_state(&self) {
-        let windows: Vec<String> = self
-            .registry
-            .windows()
-            .map(|w| {
-                format!(
-                    "{} app_id={:?} title={:?} state={}",
-                    w.id,
-                    w.application_id,
-                    w.title,
-                    w.state.as_str()
-                )
-            })
-            .collect();
-        tracing::info!(count = windows.len(), "windows");
-        for window in windows {
-            tracing::info!(target: "aqua::list", "{}", window);
         }
     }
 }

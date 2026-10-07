@@ -131,8 +131,8 @@ pub struct NetworkConfig {
 
 /// Owns the Tokio runtime that drives Quinn. Dropping it stops the transport.
 pub struct NetworkServer {
-    #[allow(dead_code)] // kept alive to drive the runtime
-    runtime: tokio::runtime::Runtime,
+    /// Kept alive to drive the QUIC runtime; not otherwise read.
+    _runtime: tokio::runtime::Runtime,
     pub local_addr: SocketAddr,
     pub identity: TlsIdentity,
 }
@@ -165,7 +165,7 @@ impl NetworkServer {
         let (local_addr, identity) =
             runtime.block_on(async move { addr_rx.await.map_err(|e| e.to_string()) })?;
         Ok(Self {
-            runtime,
+            _runtime: runtime,
             local_addr,
             identity,
         })
