@@ -349,13 +349,27 @@ impl AquaState {
     /// Encode a committed `dmabuf` frame (GPU path, no CPU readback). Dormant
     /// until an encoder advertises `supports_dmabuf()`.
     pub(crate) fn encode_video_gpu_frame(&mut self, gpu: GpuFrame) {
+        tracing::debug!(
+            target: "aqua::dmabuf",
+            window = %gpu.window_id,
+            width = gpu.width,
+            height = gpu.height,
+            "video.gpu_frame_in"
+        );
         if gpu.width < crate::gpu::MIN_WIDTH || gpu.height < crate::gpu::MIN_HEIGHT {
             return;
         }
         if !self.video_encoder.supports_dmabuf() {
+            tracing::debug!(target: "aqua::dmabuf", "video.gpu_frame_skip: encoder has no dmabuf support");
             return;
         }
         if !self.should_encode(&gpu.window_id) {
+            tracing::debug!(
+                target: "aqua::dmabuf",
+                consumer = self.has_video_consumer(),
+                mapped = self.registry.window(&RemoteWindowId::new(&gpu.window_id)).map(|w| w.mapped).unwrap_or(false),
+                "video.gpu_frame_skip: no consumer or unmapped"
+            );
             return;
         }
         self.publish_encoded_gpu(gpu);
@@ -568,6 +582,12 @@ impl AquaState {
                     surfaces: surface_infos,
                 }));
                 tracing::info!(client_id, revision = self.revision, "snapshot.sent");
+                tracing::debug!(
+                    target: "aqua::dmabuf",
+                    client_id,
+                    client_capabilities,
+                    "handshake.caps"
+                );
                 self.video_clients.insert(
                     client_id,
                     client_capabilities & crate::protocol::capability::SURFACE_VIDEO != 0,

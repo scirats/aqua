@@ -13,7 +13,7 @@ use smithay::{
 };
 
 use crate::{
-    domain::{RemoteSurfaceId, RemoteSurfaceKind},
+    domain::RemoteSurfaceKind,
     gpu::GpuFrame,
     protocol::data::{self, DamageRect, SurfaceFrame},
 };
@@ -38,8 +38,26 @@ impl CompositorHandler for AquaState {
         // dmabuf is only inspected (never CPU-mapped) on the normal path.
         let captured = capture_surface_buffer(surface);
         let dmabuf = capture_dmabuf_info(surface);
+        // The dmabuf buffer is consumed too, so build the neutral frame now —
+        // but only when a dmabuf-aware encoder actually wants video (avoid
+        // duplicating plane fds needlessly).
+        let dmabuf_frame = if dmabuf.is_some()
+            && self.has_video_consumer()
+            && self.video_supports_dmabuf()
+        {
+            capture_dmabuf_frame(surface)
+        } else {
+            None
+        };
         on_commit_buffer_handler::<Self>(surface);
-        handle_commit(self, surface, captured, dmabuf);
+        tracing::debug!(
+            target: "aqua::dmabuf",
+            has_dmabuf = dmabuf.is_some(),
+            consumer = self.has_video_consumer(),
+            frame = dmabuf_frame.is_some(),
+            "dmabuf.commit_capture"
+        );
+        handle_commit(self, surface, captured, dmabuf, dmabuf_frame);
     }
 }
 
@@ -63,13 +81,13 @@ fn handle_commit(
     surface: &WlSurface,
     captured: Option<Captured>,
     dmabuf: Option<DmabufInfo>,
+    dmabuf_frame: Option<GpuFrame>,
 ) {
     let sid = state.surface_id(surface);
 
     // GPU path: record the dmabuf metadata (format/modifier/planes/dimensions).
     // The actual import happened when the client created the `wl_buffer` (see
     // `wayland::dmabuf`); here we only observe the attach. No CPU readback.
-    let has_dmabuf = dmabuf.is_some();
     if let Some(info) = &dmabuf {
         tracing::debug!(
             target: "aqua::frame",
@@ -97,7 +115,9 @@ fn handle_commit(
     }
 
     let buffer = read_buffer_info(surface);
-    let mapped = buffer.is_some();
+    // A dmabuf buffer also maps the surface (read_buffer_info only understands
+    // wl_shm).
+    let mapped = buffer.is_some() || dmabuf.is_some();
     let events = state.registry.surface_committed(sid, buffer);
     state.emit(events);
 
@@ -105,6 +125,7 @@ fn handle_commit(
         let size = captured
             .as_ref()
             .map(|frame| (frame.width, frame.height))
+            .or_else(|| dmabuf.as_ref().map(|info| (info.width, info.height)))
             .unwrap_or((0, 0));
         let position = surface_position(surface);
         let z = state.registry.surface(sid).map(|s| s.z).unwrap_or(0);
@@ -155,16 +176,19 @@ fn handle_commit(
         }
     }
 
-    // GPU path: encode this dmabuf commit too (dormant until an encoder
-    // advertises `supports_dmabuf()`), never touching CPU pixels.
-    if has_dmabuf
-        && matches!(
+    // GPU path: encode this dmabuf commit (no CPU pixels). The frame was built
+    // before the buffer was consumed by `on_commit_buffer_handler`.
+    if let Some(mut gpu) = dmabuf_frame {
+        if matches!(
             state.registry.surface_kind(sid),
             Some(RemoteSurfaceKind::Toplevel)
-        )
-        && state.video_supports_dmabuf()
-    {
-        if let Some(gpu) = dmabuf_frame(state, surface, sid) {
+        ) {
+            gpu.surface_id = sid.to_string();
+            gpu.window_id = state
+                .registry
+                .window_for_surface(sid)
+                .map(|window| window.to_string())
+                .unwrap_or_default();
             state.encode_video_gpu_frame(gpu);
         }
     }
@@ -278,10 +302,9 @@ struct DmabufInfo {
 }
 
 /// Build a neutral [`GpuFrame`] from the committed dmabuf of `surface`,
-/// duplicating the plane fds (no CPU readback). Only called when a dmabuf-aware
-/// encoder is installed.
-fn dmabuf_frame(state: &AquaState, surface: &WlSurface, sid: RemoteSurfaceId) -> Option<GpuFrame> {
-    let window_id = state.registry.window_for_surface(sid)?.to_string();
+/// duplicating the plane fds (no CPU readback). Must be called **before**
+/// `on_commit_buffer_handler` consumes the buffer.
+fn capture_dmabuf_frame(surface: &WlSurface) -> Option<GpuFrame> {
     with_states(surface, |states| {
         let mut cached = states.cached_state.get::<SurfaceAttributes>();
         let buffer = match cached.current().buffer.as_ref() {
@@ -289,10 +312,7 @@ fn dmabuf_frame(state: &AquaState, surface: &WlSurface, sid: RemoteSurfaceId) ->
             _ => return None,
         };
         let dmabuf = smithay::wayland::dmabuf::get_dmabuf(buffer).ok()?;
-        let mut frame = crate::wayland::dmabuf::gpu_frame_from_dmabuf(dmabuf).ok()?;
-        frame.window_id = window_id.clone();
-        frame.surface_id = sid.to_string();
-        Some(frame)
+        crate::wayland::dmabuf::gpu_frame_from_dmabuf(dmabuf).ok()
     })
 }
 
