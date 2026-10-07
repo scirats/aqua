@@ -329,6 +329,11 @@ impl FfmpegVaapiSession {
         let height = self.config.height;
         let rate = self.config.frame_rate.max(1);
         let bitrate = self.config.bitrate_kbps.max(100);
+        let gop = if self.config.gop == 0 {
+            120
+        } else {
+            self.config.gop
+        };
         let codec_name = self.codec_name();
         let profile = self.profile();
         let format = self.format();
@@ -357,8 +362,12 @@ impl FfmpegVaapiSession {
             .arg(codec_name)
             .arg("-profile:v")
             .arg(profile)
+            .arg("-rc_mode")
+            .arg("CBR")
             .arg("-b:v")
             .arg(format!("{bitrate}k"))
+            .arg("-g")
+            .arg(gop.to_string())
             .arg("-bf")
             .arg("0")
             .arg("-bsf:v")

@@ -288,8 +288,8 @@ impl AquaState {
             width: frame.width,
             height: frame.height,
             frame_rate: 60,
-            bitrate_kbps: 8_000,
-            gop: 0,
+            bitrate_kbps: 12_000,
+            gop: 120,
             low_latency: true,
         };
 
