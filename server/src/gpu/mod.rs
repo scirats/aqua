@@ -281,6 +281,13 @@ pub trait VideoEncoderSession: Send {
         None
     }
 
+    /// Drain an already-produced access unit without submitting a new input
+    /// frame. Needed for async encoders (ffmpeg/sidecar) once a static window has
+    /// only been encoded on subscribe. Default: none pending.
+    fn poll(&mut self) -> Option<EncodedFrame> {
+        None
+    }
+
     /// Ask for a keyframe on the next encode (decoder reset, dropped GOP, resize,
     /// reconnection).
     fn request_keyframe(&mut self);

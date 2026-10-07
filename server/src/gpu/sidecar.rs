@@ -233,6 +233,7 @@ struct VaSidecarSession {
     force_keyframe: bool,
     frame_id: u64,
     pts_us: u64,
+    window_id: String,
 }
 
 impl VaSidecarSession {
@@ -280,6 +281,7 @@ impl VaSidecarSession {
             force_keyframe: false,
             frame_id: 0,
             pts_us: 0,
+            window_id: String::new(),
         })
     }
 
@@ -307,6 +309,7 @@ impl VideoEncoderSession for VaSidecarSession {
     }
 
     fn encode(&mut self, frame: &GpuFrame) -> Result<Option<EncodedFrame>, EncodeError> {
+        self.window_id = frame.window_id.clone();
         if frame.planes.is_empty() {
             return Err(EncodeError::Backend("dmabuf frame has no planes".into()));
         }
@@ -367,6 +370,28 @@ impl VideoEncoderSession for VaSidecarSession {
 
     fn take_codec_config(&mut self) -> Option<Bytes> {
         self.codec_config.take()
+    }
+
+    fn poll(&mut self) -> Option<EncodedFrame> {
+        loop {
+            match self.responses.try_recv() {
+                Ok(response) if response.kind == KIND_CONFIG => {
+                    self.codec_config = Some(response.payload);
+                }
+                Ok(response) if response.kind == KIND_RESPONSE_FRAME => {
+                    return Some(EncodedFrame {
+                        window_id: self.window_id.clone(),
+                        frame_id: response.frame_id,
+                        keyframe: response.keyframe,
+                        codec_config: false,
+                        pts_us: self.pts_us,
+                        data: response.payload,
+                    });
+                }
+                Ok(_) => {}
+                Err(_) => return None,
+            }
+        }
     }
 
     fn request_keyframe(&mut self) {

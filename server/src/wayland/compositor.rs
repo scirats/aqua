@@ -44,13 +44,10 @@ impl CompositorHandler for AquaState {
             release_committed_buffer(surface);
         }
         let dmabuf = capture_dmabuf_info(surface);
-        // The dmabuf buffer is consumed too, so build the neutral frame now —
-        // but only when a dmabuf-aware encoder actually wants video (avoid
-        // duplicating plane fds needlessly).
-        let dmabuf_frame = if dmabuf.is_some()
-            && self.has_video_consumer()
-            && self.video_supports_dmabuf()
-        {
+        // Build the neutral dmabuf frame whenever a dmabuf encoder exists, so the
+        // "latest source" cache is populated even before a video consumer
+        // connects (static UI: encode-on-subscribe needs the cached frame).
+        let dmabuf_frame = if dmabuf.is_some() && self.video_supports_dmabuf() {
             capture_dmabuf_frame(surface)
         } else {
             None

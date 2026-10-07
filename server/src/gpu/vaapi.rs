@@ -259,6 +259,7 @@ struct FfmpegVaapiSession {
     keyframe_requested: bool,
     frame_id: u64,
     pts_us: u64,
+    window_id: String,
 }
 
 impl FfmpegVaapiSession {
@@ -281,6 +282,7 @@ impl FfmpegVaapiSession {
             keyframe_requested: false,
             frame_id: 0,
             pts_us: 0,
+            window_id: String::new(),
         }
     }
 
@@ -488,6 +490,7 @@ impl VideoEncoderSession for FfmpegVaapiSession {
     }
 
     fn encode(&mut self, frame: &GpuFrame) -> Result<Option<EncodedFrame>, EncodeError> {
+        self.window_id = frame.window_id.clone();
         if self.keyframe_requested {
             self.stop_child();
             self.codec_config = None;
@@ -508,6 +511,12 @@ impl VideoEncoderSession for FfmpegVaapiSession {
 
     fn take_codec_config(&mut self) -> Option<Bytes> {
         self.codec_config.take()
+    }
+
+    fn poll(&mut self) -> Option<EncodedFrame> {
+        let window_id = self.window_id.clone();
+        let au = self.aus.as_ref()?.try_recv().ok()?;
+        Some(self.build_encoded(&window_id, au))
     }
 
     fn request_keyframe(&mut self) {

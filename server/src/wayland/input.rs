@@ -203,6 +203,8 @@ impl AquaState {
                 self.request_keyframe(&window_id, "video_backpressure");
             }
         }
+        // Drain AUs from async encoder sessions (needed after encode-on-subscribe).
+        self.pump_video_sessions();
         if self.registry.window_count() == 0 {
             return;
         }

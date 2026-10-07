@@ -395,6 +395,53 @@ impl AquaState {
         self.publish_encoded_gpu(gpu);
     }
 
+    /// Drain pending access units from async encoder sessions and publish them.
+    /// Needed after encode-on-subscribe: one input frame whose AU arrives later.
+    pub(crate) fn pump_video_sessions(&mut self) {
+        let Some(sink) = self.video_sink.clone() else {
+            return;
+        };
+        let windows: Vec<RemoteWindowId> = self.video_sessions.keys().cloned().collect();
+        for window in windows {
+            loop {
+                let (frame, config) = match self.video_sessions.get_mut(&window) {
+                    Some(session) => {
+                        let frame = session.poll();
+                        let config = if frame.is_some() {
+                            let codec = session.config().codec;
+                            let chroma = session.config().chroma;
+                            let width = session.config().width;
+                            let height = session.config().height;
+                            Some((codec, chroma, width, height, session.take_codec_config()))
+                        } else {
+                            None
+                        };
+                        (frame, config)
+                    }
+                    None => (None, None),
+                };
+                match frame {
+                    Some(encoded) => {
+                        if let Some((codec, chroma, width, height, Some(codec_config))) = config {
+                            sink.submit_config(
+                                &window.to_string(),
+                                VideoConfig {
+                                    codec,
+                                    chroma,
+                                    width,
+                                    height,
+                                    codec_config: codec_config.to_vec(),
+                                },
+                            );
+                        }
+                        sink.submit_frame(encoded);
+                    }
+                    None => break,
+                }
+            }
+        }
+    }
+
     /// Re-encode the last committed source of every window. Called when a client
     /// opens the video gate, so static windows (editors, terminals) appear.
     pub(crate) fn reencode_latest(&mut self) {
