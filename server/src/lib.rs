@@ -62,8 +62,11 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         .map_err(|e| format!("invalid AQUA_BIND: {e}"))?;
     let (net_tx, net_rx) = channel::channel::<ServerEvent>();
     let frame_hub = FrameHub::new();
+    let video_hub = net::VideoHub::new();
     data.state
         .set_frame_sink(frame_hub.clone() as std::sync::Arc<dyn net::FrameSink>);
+    data.state
+        .set_video_sink(video_hub.clone() as std::sync::Arc<dyn net::VideoSink>);
     let network = NetworkServer::spawn(
         NetworkConfig {
             bind,
@@ -72,6 +75,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         },
         net_tx,
         frame_hub,
+        video_hub,
     )?;
     let session_id = uuid::Uuid::new_v4().to_string();
     data.state.set_identity(

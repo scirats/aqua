@@ -281,6 +281,13 @@ impl AquaState {
     /// Drive `wl_surface.frame` callbacks. Without a renderer we throttle to a
     /// fixed clock and always deliver; this keeps clients from stalling.
     pub fn send_frames(&mut self) {
+        // Video backpressure: a full video queue asks for a forced keyframe so the
+        // decoder can resynchronize after dropped GOPs.
+        if let Some(sink) = self.video_sink.clone() {
+            for window_id in sink.take_keyframe_requests() {
+                self.request_keyframe(&window_id, "video_backpressure");
+            }
+        }
         if self.registry.window_count() == 0 {
             return;
         }
