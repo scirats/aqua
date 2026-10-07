@@ -270,6 +270,13 @@ pub trait VideoEncoder: Send + Sync {
     /// capability uses this list; an empty list means no video.
     fn supported_codecs(&self) -> &[VideoCodec];
 
+    /// Whether this encoder can consume `FrameSource::Dmabuf` frames (import to a
+    /// VA surface / VPP) without a CPU readback. Defaults to `false`: an encoder
+    /// that only handles the SHM path must not be handed dmabuf frames.
+    fn supports_dmabuf(&self) -> bool {
+        false
+    }
+
     fn create_session(
         &self,
         config: VideoEncoderConfig,

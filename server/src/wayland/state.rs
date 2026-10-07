@@ -305,44 +305,22 @@ impl AquaState {
         self.video_clients.values().any(|wants| *wants)
     }
 
+    /// Whether the installed encoder can consume dmabuf frames (GPU path).
+    pub(crate) fn video_supports_dmabuf(&self) -> bool {
+        self.video_encoder.supports_dmabuf()
+    }
+
     /// Encode one committed SHM frame for its window and publish it to the video
     /// plane. Root toplevel only for this milestone (subsurfaces/popups later).
     pub(crate) fn encode_video_frame(&mut self, frame: &SurfaceFrame) {
         if frame.width < crate::gpu::MIN_WIDTH || frame.height < crate::gpu::MIN_HEIGHT {
             return; // below the VCN minimum; padded composition is a later step
         }
-        // Cheap guard (not the hybrid decision): only produce video while at
-        // least one client wants it and the window is mapped.
-        if !self.has_video_consumer() {
+        if !self.should_encode(&frame.window_id) {
             return;
         }
-        if !self
-            .registry
-            .window(&RemoteWindowId::new(&frame.window_id))
-            .map(|window| window.mapped)
-            .unwrap_or(false)
-        {
-            return;
-        }
-        let Some(sink) = self.video_sink.clone() else {
-            return;
-        };
-        let window_id = RemoteWindowId::new(&frame.window_id);
-        let encoder = self.video_encoder.clone();
-        let config = VideoEncoderConfig {
-            codec: VideoCodec::Hevc,
-            chroma: VideoChroma::Nv12,
-            width: frame.width,
-            height: frame.height,
-            frame_rate: 60,
-            bitrate_kbps: 12_000,
-            gop: 120,
-            low_latency: true,
-        };
-
         // Repack rows to tightly packed BGRA (drop stride padding). wl_shm
-        // ARGB8888/XRGB8888 are BGRA/BGRX in memory, which is what ffmpeg's
-        // `bgra` input expects.
+        // ARGB8888/XRGB8888 are BGRA/BGRX in memory.
         let stride = frame.stride as usize;
         let row = frame.width as usize * 4;
         let needed = stride * frame.height.saturating_sub(1) as usize + row;
@@ -354,7 +332,6 @@ impl AquaState {
             let offset = y * stride;
             pixels.extend_from_slice(&frame.data[offset..offset + row]);
         }
-
         let gpu = GpuFrame {
             window_id: frame.window_id.clone(),
             surface_id: frame.surface_id.clone(),
@@ -366,6 +343,53 @@ impl AquaState {
             planes: Vec::new(),
             data: Some(Bytes::from(pixels)),
         };
+        self.publish_encoded_gpu(gpu);
+    }
+
+    /// Encode a committed `dmabuf` frame (GPU path, no CPU readback). Dormant
+    /// until an encoder advertises `supports_dmabuf()`.
+    pub(crate) fn encode_video_gpu_frame(&mut self, gpu: GpuFrame) {
+        if gpu.width < crate::gpu::MIN_WIDTH || gpu.height < crate::gpu::MIN_HEIGHT {
+            return;
+        }
+        if !self.video_encoder.supports_dmabuf() {
+            return;
+        }
+        if !self.should_encode(&gpu.window_id) {
+            return;
+        }
+        self.publish_encoded_gpu(gpu);
+    }
+
+    /// Cheap guard (not the hybrid decision): produce video only while at least
+    /// one client wants it and the window is mapped.
+    fn should_encode(&self, window_id: &str) -> bool {
+        self.has_video_consumer()
+            && self
+                .registry
+                .window(&RemoteWindowId::new(window_id))
+                .map(|window| window.mapped)
+                .unwrap_or(false)
+    }
+
+    /// Run one frame through the per-window encoder session and publish the
+    /// result (CONFIG then FRAME) to the video sink.
+    fn publish_encoded_gpu(&mut self, gpu: GpuFrame) {
+        let Some(sink) = self.video_sink.clone() else {
+            return;
+        };
+        let window_id = RemoteWindowId::new(&gpu.window_id);
+        let encoder = self.video_encoder.clone();
+        let config = VideoEncoderConfig {
+            codec: VideoCodec::Hevc,
+            chroma: VideoChroma::Nv12,
+            width: gpu.width,
+            height: gpu.height,
+            frame_rate: 60,
+            bitrate_kbps: 12_000,
+            gop: 120,
+            low_latency: true,
+        };
 
         let (outcome, codec_config) = {
             use std::collections::hash_map::Entry;
@@ -374,13 +398,13 @@ impl AquaState {
                 Entry::Vacant(vacant) => match encoder.create_session(config) {
                     Ok(session) => vacant.insert(session),
                     Err(error) => {
-                        tracing::warn!(window = %frame.window_id, %error, "video.session_failed");
+                        tracing::warn!(window = %gpu.window_id, %error, "video.session_failed");
                         return;
                     }
                 },
             };
-            if session.config().width != frame.width || session.config().height != frame.height {
-                let _ = session.reconfigure(frame.width, frame.height);
+            if session.config().width != gpu.width || session.config().height != gpu.height {
+                let _ = session.reconfigure(gpu.width, gpu.height);
             }
             let outcome = session.encode(&gpu);
             (outcome, session.take_codec_config())
@@ -390,12 +414,12 @@ impl AquaState {
             Ok(Some(encoded)) => {
                 if let Some(codec_config) = codec_config {
                     sink.submit_config(
-                        &frame.window_id,
+                        &gpu.window_id,
                         VideoConfig {
                             codec: VideoCodec::Hevc,
                             chroma: VideoChroma::Nv12,
-                            width: frame.width,
-                            height: frame.height,
+                            width: gpu.width,
+                            height: gpu.height,
                             codec_config: codec_config.to_vec(),
                         },
                     );
@@ -404,7 +428,7 @@ impl AquaState {
             }
             Ok(None) => {}
             Err(error) => {
-                tracing::warn!(window = %frame.window_id, %error, "video.encode_failed");
+                tracing::warn!(window = %gpu.window_id, %error, "video.encode_failed");
                 self.video_sessions.remove(&window_id);
             }
         }

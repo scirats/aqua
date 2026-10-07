@@ -13,7 +13,8 @@ use smithay::{
 };
 
 use crate::{
-    domain::RemoteSurfaceKind,
+    domain::{RemoteSurfaceId, RemoteSurfaceKind},
+    gpu::GpuFrame,
     protocol::data::{self, DamageRect, SurfaceFrame},
 };
 
@@ -68,7 +69,8 @@ fn handle_commit(
     // GPU path: record the dmabuf metadata (format/modifier/planes/dimensions).
     // The actual import happened when the client created the `wl_buffer` (see
     // `wayland::dmabuf`); here we only observe the attach. No CPU readback.
-    if let Some(info) = dmabuf {
+    let has_dmabuf = dmabuf.is_some();
+    if let Some(info) = &dmabuf {
         tracing::debug!(
             target: "aqua::frame",
             surface_id = %sid,
@@ -150,6 +152,20 @@ fn handle_commit(
                 state.encode_video_frame(&frame);
             }
             sink.submit_frame(frame);
+        }
+    }
+
+    // GPU path: encode this dmabuf commit too (dormant until an encoder
+    // advertises `supports_dmabuf()`), never touching CPU pixels.
+    if has_dmabuf
+        && matches!(
+            state.registry.surface_kind(sid),
+            Some(RemoteSurfaceKind::Toplevel)
+        )
+        && state.video_supports_dmabuf()
+    {
+        if let Some(gpu) = dmabuf_frame(state, surface, sid) {
+            state.encode_video_gpu_frame(gpu);
         }
     }
 
@@ -261,8 +277,26 @@ struct DmabufInfo {
     planes: usize,
 }
 
-fn capture_dmabuf_info(surface: &WlSurface) -> Option<DmabufInfo> {
+/// Build a neutral [`GpuFrame`] from the committed dmabuf of `surface`,
+/// duplicating the plane fds (no CPU readback). Only called when a dmabuf-aware
+/// encoder is installed.
+fn dmabuf_frame(state: &AquaState, surface: &WlSurface, sid: RemoteSurfaceId) -> Option<GpuFrame> {
+    let window_id = state.registry.window_for_surface(sid)?.to_string();
     with_states(surface, |states| {
+        let mut cached = states.cached_state.get::<SurfaceAttributes>();
+        let buffer = match cached.current().buffer.as_ref() {
+            Some(BufferAssignment::NewBuffer(buffer)) => buffer,
+            _ => return None,
+        };
+        let dmabuf = smithay::wayland::dmabuf::get_dmabuf(buffer).ok()?;
+        let mut frame = crate::wayland::dmabuf::gpu_frame_from_dmabuf(dmabuf).ok()?;
+        frame.window_id = window_id.clone();
+        frame.surface_id = sid.to_string();
+        Some(frame)
+    })
+}
+
+fn capture_dmabuf_info(surface: &WlSurface) -> Option<DmabufInfo> {    with_states(surface, |states| {
         let mut cached = states.cached_state.get::<SurfaceAttributes>();
         let attrs = cached.current();
         let buffer = match attrs.buffer.as_ref() {
