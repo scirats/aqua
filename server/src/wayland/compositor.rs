@@ -166,32 +166,21 @@ fn handle_commit(
                 bytes = frame.payload_len(),
                 "frame.captured"
             );
-            // Video plane (phase 3C): encode the root toplevel commit too.
-            if state.has_video()
-                && matches!(
-                    state.registry.surface_kind(sid),
-                    Some(RemoteSurfaceKind::Toplevel)
-                )
-            {
+            // Video plane (phase 3C): encode any committed surface of the window.
+            if state.has_video() && state.registry.window_for_surface(sid).is_some() {
                 state.encode_video_frame(&frame);
             }
             sink.submit_frame(frame);
         }
     }
 
-    // GPU path: encode this dmabuf commit (no CPU pixels). The frame was built
-    // before the buffer was consumed by `on_commit_buffer_handler`.
+    // GPU path: encode this dmabuf commit (no CPU pixels). Gate on "belongs to a
+    // window" rather than strictly Toplevel, because some toolkits (GTK4) put the
+    // content dmabuf on a different surface of the same window.
     if let Some(mut gpu) = dmabuf_frame {
-        if matches!(
-            state.registry.surface_kind(sid),
-            Some(RemoteSurfaceKind::Toplevel)
-        ) {
+        if let Some(window) = state.registry.window_for_surface(sid) {
+            gpu.window_id = window.to_string();
             gpu.surface_id = sid.to_string();
-            gpu.window_id = state
-                .registry
-                .window_for_surface(sid)
-                .map(|window| window.to_string())
-                .unwrap_or_default();
             state.encode_video_gpu_frame(gpu);
         }
     }

@@ -386,6 +386,7 @@ impl AquaState {
             return;
         }
         if let Ok(cached) = gpu.try_clone() {
+            tracing::debug!(target: "aqua::dmabuf", window = %gpu.window_id, "video.dmabuf_cached");
             self.latest
                 .insert(RemoteWindowId::new(&gpu.window_id), CachedSource::Dmabuf(cached));
         }
